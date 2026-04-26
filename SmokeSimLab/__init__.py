@@ -43,7 +43,7 @@ Requires Blender 4.x (tested on 4.5.5).
 bl_info = {
     "name":        "SmokeSimLab",
     "author":      "SmokeSimLab",
-    "version":     (1, 3, 0),
+    "version":     (0, 1, 1),
     "blender":     (4, 0, 0),
     "location":    "View3D > Sidebar > SmokeLab",
     "description": "Batch smoke simulation parameter sweeper with CSV logging",
