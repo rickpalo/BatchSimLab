@@ -1404,18 +1404,25 @@ class SMOKE_OT_retry_failed(bpy.types.Operator):
             self.report({'ERROR'}, "Jobs folder not found — run Export Batch first")
             return {'CANCELLED'}
 
+        # Collect failed jobs — check ALL .done files (including _retry.done) for
+        # "error"; strip _retry suffix to get the base job stem so re-retrying works.
         failed = []
+        seen_base_stems = set()
         for f in sorted(os.listdir(jobs_dir)):
-            if not f.endswith(".done") or f.endswith("_retry.done"):
+            if not f.endswith(".done"):
                 continue
             try:
                 with open(os.path.join(jobs_dir, f)) as fh:
                     if "error" not in fh.read().lower():
                         continue
-                stem     = f[:-5]
-                job_json = os.path.join(jobs_dir, stem + ".json")
+                stem      = f[:-5]
+                base_stem = stem[:-6] if stem.endswith("_retry") else stem
+                if base_stem in seen_base_stems:
+                    continue
+                job_json = os.path.join(jobs_dir, base_stem + ".json")
                 if os.path.exists(job_json):
-                    failed.append((stem, job_json))
+                    failed.append((base_stem, job_json))
+                    seen_base_stems.add(base_stem)
             except OSError:
                 pass
 
@@ -1437,22 +1444,22 @@ class SMOKE_OT_retry_failed(bpy.types.Operator):
             "",
         ]
 
-        for stem, job_json in failed:
+        for base_stem, job_json in failed:
             with open(job_json) as fh:
                 job_data = json.load(fh)
 
             job_data["use_placeholders"]   = True
             job_data["use_existing_cache"] = True
 
-            log_path  = os.path.join(jobs_dir, stem + "_retry.log")
-            done_path = os.path.join(jobs_dir, stem + "_retry.done")
+            log_path  = os.path.join(jobs_dir, base_stem + "_retry.log")
+            done_path = os.path.join(jobs_dir, base_stem + "_retry.done")
             job_data["log_path"] = log_path
 
-            retry_json = os.path.join(jobs_dir, stem + "_retry.json")
+            retry_json = os.path.join(jobs_dir, base_stem + "_retry.json")
             with open(retry_json, "w") as fh:
                 json.dump(job_data, fh, indent=2)
 
-            name        = job_data.get("name", stem)
+            name        = job_data.get("name", base_stem)
             render_mode = job_data.get("render_mode", "CYCLES")
             if render_mode == "EEVEE":
                 blender_cmd = (
@@ -1490,6 +1497,41 @@ class SMOKE_OT_retry_failed(bpy.types.Operator):
         bat_path = os.path.join(output_path, "run_retry_failed.bat")
         with open(bat_path, "w") as fh:
             fh.write("\n".join(bat_lines))
+
+        # Remove all .done markers for the jobs being retried (both original and
+        # any prior _retry) so they are counted as "in progress" by the poll timer.
+        for base_stem, _ in failed:
+            for suffix in ("", "_retry"):
+                try:
+                    os.remove(os.path.join(jobs_dir, base_stem + suffix + ".done"))
+                except OSError:
+                    pass
+
+        # Reset progress tracking so the panel shows bars instead of the
+        # "All N complete" message while the retry jobs are running.
+        total_jobs = len([f for f in os.listdir(jobs_dir)
+                          if f.endswith(".json") and "_retry" not in f])
+        done_now   = len([f for f in os.listdir(jobs_dir) if f.endswith(".done")])
+
+        s.batch_complete_msg   = ""
+        s.batch_total          = total_jobs
+        s.batch_jobs_dir       = jobs_dir
+        s.batch_progress       = f"{done_now} of {total_jobs} job(s) complete"
+        s.batch_overall_factor = done_now / total_jobs if total_jobs > 0 else 0.0
+        s.batch_subtask_text   = ""
+        s.batch_subtask_factor = 0.0
+        s.batch_job_text       = ""
+        s.batch_job_factor     = 0.0
+        s.batch_start_time     = time.time()
+        s.batch_time_remaining = "Estimating..."
+        s.batch_job_log_key    = ""
+        s.batch_job_start_time = 0.0
+        s.batch_frame_end      = 0
+
+        if not bpy.app.timers.is_registered(_poll_batch_progress):
+            bpy.app.timers.register(_poll_batch_progress, first_interval=5.0)
+
+        _redraw_panels()
 
         subprocess.Popen(
             ["cmd", "/c", "start", "SmokeSimLab Retry", bat_path],
