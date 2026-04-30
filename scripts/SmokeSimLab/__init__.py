@@ -43,7 +43,7 @@ Requires Blender 4.x (tested on 4.5.5 and 5.1.1) on Windows 10/11.  May work on 
 bl_info = {
     "name":        "SmokeSimLab",
     "author":      "SmokeSimLab",
-    "version":     (0, 1, 20),
+    "version":     (0, 1, 22),
     "blender":     (4, 0, 0),
     "location":    "View3D > Sidebar > SmokeLab",
     "description": "Batch smoke simulation parameter sweeper with CSV logging",
@@ -1262,7 +1262,7 @@ def _poll_batch_progress():
             job_factor    = min(elapsed_in_job / default_job_secs, 0.99) if default_job_secs > 0 else 0.0
             job_remaining = max(default_job_secs - elapsed_in_job, 0.0)
             s.batch_job_factor = job_factor
-            s.batch_job_text   = f"Stage {stage_completed} of {_TOTAL_SUBTASKS} ({_format_eta(job_remaining)})"
+            s.batch_job_text   = f"Job stage {stage_completed} of {_TOTAL_SUBTASKS} ({_format_eta(job_remaining)} this job)"
 
             # --- ETA: current_job_remaining + not-started jobs × avg_per_job ---
             time_for_completed = (
@@ -1272,7 +1272,7 @@ def _poll_batch_progress():
             avg_completed    = (time_for_completed / done) if done > 0 else default_job_secs
             jobs_not_started = max(total - done - 1, 0)
             remaining        = job_remaining + jobs_not_started * avg_completed
-            s.batch_time_remaining = _format_eta(remaining)
+            s.batch_time_remaining = f"All jobs: {_format_eta(remaining)}"
 
         else:
             s.batch_subtask_text   = ""
@@ -1612,9 +1612,9 @@ class SMOKE_OT_setup_results(bpy.types.Operator):
 
         n    = len(png_files)
         cols = math.ceil(math.sqrt(n))
-        pw   = 1.0
-        ph   = aspect
-        gap  = 0.05
+        pw   = 1.0           # plane width in Blender units
+        ph   = aspect        # plane height (maintains image aspect ratio)
+        gap  = 0.05 * pw     # 5% of plane width between planes
 
         planes = []
         for idx, png_path in enumerate(png_files):
@@ -1625,7 +1625,7 @@ class SMOKE_OT_setup_results(bpy.types.Operator):
 
             bpy.ops.mesh.primitive_plane_add(size=1.0, location=(x, y, 0.0))
             obj = context.active_object
-            obj.scale = (pw / 2.0, ph / 2.0, 1.0)
+            obj.scale = (pw, ph, 1.0)
             bpy.ops.object.transform_apply(scale=True)
             obj.name = f"SmokeResult_{idx:04d}"
 

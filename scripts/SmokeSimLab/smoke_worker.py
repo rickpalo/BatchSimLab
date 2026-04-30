@@ -340,19 +340,37 @@ d.cache_directory = effective_cache_dir
 bpy.context.view_layer.update()
 _time.sleep(2.0)
 
-# Check whether usable cache files already exist in the resolved directory
-existing_cache_files = []
-for root, dirs, files in os.walk(effective_cache_dir):
+# Determine bake completeness by checking if the last required frame is cached.
+# Three outcomes:
+#   1. Complete cache (frame_end present)  → skip bake entirely
+#   2. Partial cache (some frames, not all) → resume bake without freeing
+#   3. No cache (or ignoring existing)     → free + fresh bake
+baked_frames = set()
+for _root, _dirs, files in os.walk(effective_cache_dir):
     for f in files:
-        if f.endswith('.vdb') or f.endswith('.uni'):
-            existing_cache_files.append(os.path.join(root, f))
+        m = re.search(r'_(\d{4})\.(vdb|uni)$', f)
+        if m:
+            baked_frames.add(int(m.group(1)))
 
-if use_existing_cache and existing_cache_files:
-    _log(f"[{name}] Use Existing Cache enabled — found {len(existing_cache_files)} cache file(s), skipping bake.")
+bake_complete = (frame_end in baked_frames)
+
+if use_existing_cache and bake_complete:
+    _log(f"[{name}] Use Existing Cache enabled — frame {frame_end} confirmed, skipping bake.")
     bake_seconds = 0.0
+
+elif use_existing_cache and baked_frames:
+    # Partial bake from a previous crash — resume without freeing existing frames
+    _log(f"[{name}] Partial cache ({len(baked_frames)}/{frame_end} frames). Resuming bake...")
+    _log(f"[{name}] Baking...")
+    bake_start   = _time.time()
+    bpy.ops.fluid.bake_all()
+    bake_seconds = _time.time() - bake_start
+    _log(f"[{name}] Bake complete in {bake_seconds:.0f}s.")
+    _time.sleep(2.0)
+
 else:
     if effective_cache_dir != cache_dir:
-        # No files in alt dir — fall back to current job's fresh cache
+        # No usable files in alt dir — fall back to this job's own cache dir
         effective_cache_dir = cache_dir
         d.cache_directory   = cache_dir
     _log(f"[{name}] Freeing previous cache...")
@@ -364,20 +382,19 @@ else:
     bpy.ops.fluid.bake_all()
     bake_seconds = _time.time() - bake_start
     _log(f"[{name}] Bake complete in {bake_seconds:.0f}s.")
-
     _time.sleep(2.0)
 
-    # Verify cache wrote successfully
-    existing_cache_files = []
-    for root, dirs, files in os.walk(effective_cache_dir):
-        for f in files:
-            if f.endswith('.vdb') or f.endswith('.uni'):
-                existing_cache_files.append(os.path.join(root, f))
+# Verify cache is populated before proceeding to render
+existing_cache_files = []
+for root, dirs, files in os.walk(effective_cache_dir):
+    for f in files:
+        if f.endswith('.vdb') or f.endswith('.uni'):
+            existing_cache_files.append(os.path.join(root, f))
 
-    _log(f"[{name}] Cache files found: {len(existing_cache_files)}")
-    if len(existing_cache_files) == 0:
-        _log(f"[{name}] ERROR: No cache files under {effective_cache_dir} — skipping render")
-        sys.exit(1)
+_log(f"[{name}] Cache files found: {len(existing_cache_files)}")
+if len(existing_cache_files) == 0:
+    _log(f"[{name}] ERROR: No cache files under {effective_cache_dir} — skipping render")
+    sys.exit(1)
 
 # ---------------------------------------------------------------------------
 # Update text objects (after bake — includes bake time)
