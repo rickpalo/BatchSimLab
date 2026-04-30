@@ -207,7 +207,6 @@ marimo/_lsp/
 __marimo__/
 
 # SmokeSimLab local workspace
-scripts/
 *.zip
 .vscode/
 .claude/

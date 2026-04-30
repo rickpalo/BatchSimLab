@@ -17,7 +17,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Build addon zip
-        run: zip -r SmokeSimLab.zip SmokeSimLab/
+        run: cd scripts && zip -r ../SmokeSimLab.zip SmokeSimLab/
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
