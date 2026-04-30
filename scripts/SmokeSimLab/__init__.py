@@ -43,7 +43,7 @@ Requires Blender 4.x (tested on 4.5.5 and 5.1.1) on Windows 10/11.  May work on 
 bl_info = {
     "name":        "SmokeSimLab",
     "author":      "SmokeSimLab",
-    "version":     (0, 1, 19),
+    "version":     (0, 1, 20),
     "blender":     (4, 0, 0),
     "location":    "View3D > Sidebar > SmokeLab",
     "description": "Batch smoke simulation parameter sweeper with CSV logging",
@@ -94,6 +94,12 @@ _PARAM_BOUNDS = {
     "noise_strength":      (0.0,  None),
     "noise_spatial_scale": (0.0,  None),
 }
+
+# Default per-frame / per-stage timing estimates used before real data is available.
+_SETUP_SECS_DEFAULT  =  10.0   # seconds for setup / cache phase
+_BAKE_RATE_DEFAULT   =   0.25  # seconds per frame for baking
+_RENDER_RATE_DEFAULT =  15.0   # seconds per frame for animation render
+_STILL_SECS_DEFAULT  =  30.0   # seconds for final still frame
 
 
 # ---------------------------------------------------------------------------
@@ -831,6 +837,9 @@ class SmokeSettings(bpy.types.PropertyGroup):
     batch_complete_msg:   bpy.props.StringProperty(default="")
     batch_start_time:     bpy.props.FloatProperty(default=0.0)
     batch_time_remaining: bpy.props.StringProperty(default="")
+    batch_job_log_key:    bpy.props.StringProperty(default="")
+    batch_job_start_time: bpy.props.FloatProperty(default=0.0)
+    batch_frame_end:      bpy.props.IntProperty(default=0)
     show_results:         bpy.props.BoolProperty(
         name="Display Results When Finished",
         description="After all jobs complete, create a grid of result planes in a SmokeOutput collection",
@@ -1056,8 +1065,7 @@ _STAGES = (
     ("Use Existing Cache enabled", "Using existing cache",  2),  # setup + bake both done
     ("Baking...",                  "Baking simulation",     1),  # setup done
     ("Bake complete",              "Verifying cache",       2),  # baking done
-    ("Playblasting",               "Rendering animation",   2),
-    ("Anim Reviewer complete",     "Animation complete",    2),
+    ("Rendering animation",        "Rendering animation",   2),
     ("frame sequence complete",    "Animation complete",    2),
     ("MP4 conversion complete",    "Encoding MP4",          2),
     ("Rendering final frame",      "Rendering still",       3),  # animation done
@@ -1067,12 +1075,12 @@ _STAGES = (
 _TOTAL_SUBTASKS = 4
 
 
-def _read_job_stage(jobs_dir):
-    """Return (subtask_label, subtask_factor, job_factor, job_text) for the running job."""
+def _find_running_log(jobs_dir):
+    """Return (log_file, log_stem, tail) for the current active job, or None."""
     try:
         all_files = set(os.listdir(jobs_dir))
     except OSError:
-        return "", 0.0, 0.0, ""
+        return None
     for log_file in reversed(sorted(f for f in all_files if f.endswith(".log"))):
         if log_file[:-4] + ".done" in all_files:
             continue
@@ -1081,14 +1089,54 @@ def _read_job_stage(jobs_dir):
                 tail = fh.read()[-4096:]
         except OSError:
             continue
-        for keyword, label, completed in reversed(_STAGES):
-            if keyword in tail:
-                subtask_factor = min((completed + 0.5) / _TOTAL_SUBTASKS, 1.0)
-                job_factor     = completed / _TOTAL_SUBTASKS
-                job_text       = f"Stage {completed} of {_TOTAL_SUBTASKS} complete"
-                return label, subtask_factor, job_factor, job_text
-        return "Starting", 0.1, 0.0, f"Stage 0 of {_TOTAL_SUBTASKS} complete"
-    return "", 0.0, 0.0, ""
+        return log_file, log_file[:-4], tail
+    return None
+
+
+def _count_vdb_frames(jobs_dir, log_stem):
+    """Return (frames_baked, frame_end) by counting VDB files for log_stem, or None."""
+    json_path = os.path.join(jobs_dir, log_stem + ".json")
+    try:
+        with open(json_path) as fh:
+            job_data = json.load(fh)
+    except (OSError, json.JSONDecodeError):
+        return None
+    frame_end   = job_data.get("frame_end", 0)
+    output_path = job_data.get("output_path", "")
+    name        = job_data.get("name", "")
+    if not (output_path and name and frame_end):
+        return None
+    data_dir     = os.path.join(output_path, "Cache", name, "data")
+    frames_baked = set()
+    if os.path.isdir(data_dir):
+        for f in os.listdir(data_dir):
+            m = re.search(r'_(\d{4})\.vdb$', f)
+            if m:
+                frames_baked.add(int(m.group(1)))
+    return len(frames_baked), frame_end
+
+
+def _count_png_frames(jobs_dir, log_stem):
+    """Return (frames_rendered, frame_end) by counting PNG frames for log_stem, or None."""
+    json_path = os.path.join(jobs_dir, log_stem + ".json")
+    try:
+        with open(json_path) as fh:
+            job_data = json.load(fh)
+    except (OSError, json.JSONDecodeError):
+        return None
+    frame_end   = job_data.get("frame_end", 0)
+    output_path = job_data.get("output_path", "")
+    name        = job_data.get("name", "")
+    if not (output_path and name and frame_end):
+        return None
+    frames_dir      = os.path.join(output_path, "Renders", f"{name}_frames")
+    frames_rendered = 0
+    if os.path.isdir(frames_dir):
+        frames_rendered = sum(
+            1 for f in os.listdir(frames_dir)
+            if re.match(r'frame_\d{4}\.png$', f)
+        )
+    return frames_rendered, frame_end
 
 
 def _format_eta(seconds):
@@ -1100,55 +1148,6 @@ def _format_eta(seconds):
     h = int(seconds / 3600)
     m = int((seconds % 3600) / 60)
     return f"~{h}h {m}min remaining"
-
-
-def _read_bake_progress(jobs_dir):
-    """Return (frames_baked, frame_end) for the actively-baking job, or None.
-
-    Scans the currently-running job's log for the 'Baking...' keyword, then
-    counts unique frame numbers in the job's Cache/.../data/*.vdb files to
-    derive real-time bake progress without any changes to the worker script.
-    """
-    try:
-        all_files = set(os.listdir(jobs_dir))
-    except OSError:
-        return None
-
-    for log_file in reversed(sorted(f for f in all_files if f.endswith(".log"))):
-        if log_file[:-4] + ".done" in all_files:
-            continue
-        try:
-            with open(os.path.join(jobs_dir, log_file), "r", errors="replace") as fh:
-                tail = fh.read()[-4096:]
-        except OSError:
-            continue
-
-        if "Baking..." not in tail or "Bake complete" in tail:
-            return None
-
-        json_path = os.path.join(jobs_dir, log_file[:-4] + ".json")
-        try:
-            with open(json_path) as fh:
-                job_data = json.load(fh)
-        except (OSError, json.JSONDecodeError):
-            return None
-
-        frame_end   = job_data.get("frame_end", 0)
-        output_path = job_data.get("output_path", "")
-        name        = job_data.get("name", "")
-        if not (output_path and name and frame_end):
-            return None
-
-        data_dir     = os.path.join(output_path, "Cache", name, "data")
-        frames_baked = set()
-        if os.path.isdir(data_dir):
-            for f in os.listdir(data_dir):
-                m = re.search(r'_(\d{4})\.vdb$', f)
-                if m:
-                    frames_baked.add(int(m.group(1)))
-        return len(frames_baked), frame_end
-
-    return None
 
 
 def _poll_batch_progress():
@@ -1190,6 +1189,9 @@ def _poll_batch_progress():
             s.batch_job_factor     = 0.0
             s.batch_jobs_dir       = ""
             s.batch_time_remaining = ""
+            s.batch_job_log_key    = ""
+            s.batch_job_start_time = 0.0
+            s.batch_frame_end      = 0
             _redraw_panels()
             if s.show_results:
                 bpy.app.timers.register(_setup_results_deferred, first_interval=0.5)
@@ -1197,23 +1199,86 @@ def _poll_batch_progress():
 
         s.batch_overall_factor = done / total
         s.batch_progress       = f"{done} of {total} job(s) complete"
-        (s.batch_subtask_text, s.batch_subtask_factor,
-         s.batch_job_factor, s.batch_job_text) = _read_job_stage(jobs_dir)
 
-        # Refine the baking sub-task bar with real frame-level progress
-        if "Baking simulation" in s.batch_subtask_text:
-            bake_info = _read_bake_progress(jobs_dir)
-            if bake_info:
-                baked, total_frames = bake_info
-                if total_frames > 0:
-                    s.batch_subtask_text   = f"Baking: frame {baked} / {total_frames}"
-                    s.batch_subtask_factor = baked / total_frames
+        running = _find_running_log(jobs_dir)
+        if running:
+            log_file, log_stem, tail = running
+            now = time.time()
 
-        # Time remaining estimate based on average time per completed job
-        if done > 0 and s.batch_start_time > 0:
-            elapsed = time.time() - s.batch_start_time
-            eta     = (elapsed / done) * (total - done)
-            s.batch_time_remaining = _format_eta(eta)
+            # Detect job transition — reset per-job timer and load frame count
+            if log_file != s.batch_job_log_key:
+                s.batch_job_log_key    = log_file
+                s.batch_job_start_time = now
+                json_path = os.path.join(jobs_dir, log_stem + ".json")
+                try:
+                    with open(json_path) as fh:
+                        jd = json.load(fh)
+                    s.batch_frame_end = jd.get("frame_end", 0)
+                except (OSError, json.JSONDecodeError):
+                    s.batch_frame_end = 0
+
+            frame_end      = max(s.batch_frame_end, 1)
+            elapsed_in_job = max(now - s.batch_job_start_time, 0.0) if s.batch_job_start_time > 0 else 0.0
+
+            # Determine current stage from log tail
+            stage_label    = "Starting"
+            stage_completed = 0
+            for keyword, label, completed in reversed(_STAGES):
+                if keyword in tail:
+                    stage_label     = label
+                    stage_completed = completed
+                    break
+
+            # --- Bar 1: sub-task with real frame-level progress ---
+            subtask_text   = stage_label
+            subtask_factor = min((stage_completed + 0.5) / _TOTAL_SUBTASKS, 1.0)
+
+            if stage_label == "Baking simulation":
+                bake_info = _count_vdb_frames(jobs_dir, log_stem)
+                if bake_info:
+                    baked, total_frames = bake_info
+                    if total_frames > 0:
+                        subtask_text   = f"Baking ({baked} of {total_frames})"
+                        subtask_factor = baked / total_frames
+
+            elif stage_label == "Rendering animation":
+                render_info = _count_png_frames(jobs_dir, log_stem)
+                if render_info:
+                    rendered, total_frames = render_info
+                    if total_frames > 0:
+                        subtask_text   = f"Rendering ({rendered} of {total_frames})"
+                        subtask_factor = rendered / total_frames
+
+            s.batch_subtask_text   = subtask_text
+            s.batch_subtask_factor = subtask_factor
+
+            # --- Bar 2: time-weighted job progress (consumed / estimated total) ---
+            default_job_secs = (
+                _SETUP_SECS_DEFAULT
+                + _BAKE_RATE_DEFAULT   * frame_end
+                + _RENDER_RATE_DEFAULT * frame_end
+                + _STILL_SECS_DEFAULT
+            )
+            job_factor    = min(elapsed_in_job / default_job_secs, 0.99) if default_job_secs > 0 else 0.0
+            job_remaining = max(default_job_secs - elapsed_in_job, 0.0)
+            s.batch_job_factor = job_factor
+            s.batch_job_text   = f"Stage {stage_completed} of {_TOTAL_SUBTASKS} ({_format_eta(job_remaining)})"
+
+            # --- ETA: current_job_remaining + not-started jobs × avg_per_job ---
+            time_for_completed = (
+                max(s.batch_job_start_time - s.batch_start_time, 0.0)
+                if s.batch_job_start_time > 0 and s.batch_start_time > 0 else 0.0
+            )
+            avg_completed    = (time_for_completed / done) if done > 0 else default_job_secs
+            jobs_not_started = max(total - done - 1, 0)
+            remaining        = job_remaining + jobs_not_started * avg_completed
+            s.batch_time_remaining = _format_eta(remaining)
+
+        else:
+            s.batch_subtask_text   = ""
+            s.batch_subtask_factor = 0.0
+            s.batch_job_text       = ""
+            s.batch_job_factor     = 0.0
 
         _redraw_panels()
         return 5.0
@@ -1288,6 +1353,9 @@ class SMOKE_OT_run_batch(bpy.types.Operator):
         s.batch_job_factor     = 0.0
         s.batch_start_time     = time.time()
         s.batch_time_remaining = "Estimating..."
+        s.batch_job_log_key    = ""
+        s.batch_job_start_time = 0.0
+        s.batch_frame_end      = 0
 
         # Launch the bat in a new console window; returns immediately.
         # cwd is set to output_path so the new cmd starts with a valid directory.
@@ -1928,6 +1996,9 @@ def _reset_on_load(dummy=None):
         s.batch_job_factor     = 0.0
         s.batch_start_time     = 0.0
         s.batch_time_remaining = ""
+        s.batch_job_log_key    = ""
+        s.batch_job_start_time = 0.0
+        s.batch_frame_end      = 0
 
 
 # ---------------------------------------------------------------------------

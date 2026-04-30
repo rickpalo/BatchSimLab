@@ -401,104 +401,69 @@ scene.frame_end   = frame_end
 mp4 = os.path.join(render_dir, name + ".mp4")
 
 bpy.context.view_layer.update()
-_time.sleep(1.0)
 
-# Try Anim Reviewer addon first (fast viewport render if available)
-anim_reviewer_used = False
-if 'bl_ext.blender_org.anim_reviewer' in bpy.context.preferences.addons or \
-   'anim_reviewer' in bpy.context.preferences.addons:
-    try:
-        scene.render.filepath                   = mp4
-        scene.render.image_settings.file_format = "FFMPEG"
-        scene.render.ffmpeg.format              = "MPEG4"
-        scene.render.ffmpeg.codec               = "H264"
-        bpy.ops.animreview.render_animation()
-        anim_reviewer_used = True
-        _log(f"[{name}] Playblast via Anim Reviewer complete.")
-    except Exception as e:
-        _log(f"[{name}] Anim Reviewer failed ({e}), falling back to Cycles.")
+# Always render a PNG sequence first, then convert with external ffmpeg.
+# This allows resuming after a crash and gives frame-level progress tracking.
+png_sequence_dir = os.path.join(render_dir, f"{name}_frames")
 
-if not anim_reviewer_used:
-    # Cycles GPU playblast — works reliably in background mode
-    setup_cycles(scene, samples=32)
-    scene.render.filepath                   = mp4
-    scene.render.ffmpeg.format              = "MPEG4"
-    scene.render.ffmpeg.codec               = "H264"
+# When use_placeholders is on, also accept a frames folder produced by
+# a different job-number run with identical parameters.
+effective_frames_dir = png_sequence_dir
+if use_placeholders:
+    alt_frames = _find_match(render_dir, name_prefix, suffix="_frames")
+    if alt_frames:
+        effective_frames_dir = alt_frames
+        if alt_frames != png_sequence_dir:
+            _log(f"[{name}] Found existing frames dir from different run: {alt_frames}")
 
-    # Try native FFMPEG format (Blender < 5.1)
-    ffmpeg_supported = False
-    try:
-        scene.render.image_settings.file_format = "FFMPEG"
-        ffmpeg_supported = True
-        _log(f"[{name}] Playblasting (Cycles {scene.cycles.samples} samples) -> {mp4}")
-        bpy.ops.render.render(animation=True)
-        _log(f"[{name}] Playblast complete.")
-    except TypeError:
-        # FFMPEG format not supported (Blender 5.1+), fall back to PNG sequence
-        _log(f"[{name}] FFMPEG format not supported, rendering to PNG sequence instead.")
-        ffmpeg_supported = False
+os.makedirs(effective_frames_dir, exist_ok=True)
+setup_cycles(scene, samples=32)
+scene.render.image_settings.file_format = "PNG"
 
-    if not ffmpeg_supported:
-        # Render to PNG sequence, then convert with external FFmpeg
-        png_sequence_dir = os.path.join(render_dir, f"{name}_frames")
+# Check for existing frames if use_placeholders is enabled
+frames_to_render = set(range(scene.frame_start, frame_end + 1))
+if use_placeholders:
+    existing_frames = set()
+    for frame_num in frames_to_render:
+        frame_file = os.path.join(effective_frames_dir, f"frame_{frame_num:04d}.png")
+        if os.path.exists(frame_file):
+            existing_frames.add(frame_num)
 
-        # When use_placeholders is on, also accept a frames folder produced by
-        # a different job-number run with identical parameters.
-        effective_frames_dir = png_sequence_dir
-        if use_placeholders:
-            alt_frames = _find_match(render_dir, name_prefix, suffix="_frames")
-            if alt_frames:
-                effective_frames_dir = alt_frames
-                if alt_frames != png_sequence_dir:
-                    _log(f"[{name}] Found existing frames dir from different run: {alt_frames}")
+    frames_to_render -= existing_frames
+    if existing_frames:
+        _log(f"[{name}] Found {len(existing_frames)} existing frame(s), skipping those")
+    if not frames_to_render:
+        _log(f"[{name}] All frames already exist, skipping animation render")
 
-        os.makedirs(effective_frames_dir, exist_ok=True)
-        scene.render.image_settings.file_format = "PNG"
+# Render frames individually to support partial resume
+if frames_to_render:
+    _log(f"[{name}] Rendering animation ({len(frames_to_render)} frame(s)) -> {effective_frames_dir}")
+    for frame_num in sorted(frames_to_render):
+        scene.frame_set(frame_num)
+        frame_file = os.path.join(effective_frames_dir, f"frame_{frame_num:04d}.png")
+        scene.render.filepath = frame_file
+        bpy.ops.render.render(write_still=True)
+    _log(f"[{name}] Playblast frame sequence complete.")
+else:
+    _log(f"[{name}] No frames to render (all exist or skipped)")
 
-        # Check for existing frames if use_placeholders is enabled
-        frames_to_render = set(range(scene.frame_start, frame_end + 1))
-        if use_placeholders:
-            existing_frames = set()
-            for frame_num in frames_to_render:
-                frame_file = os.path.join(effective_frames_dir, f"frame_{frame_num:04d}.png")
-                if os.path.exists(frame_file):
-                    existing_frames.add(frame_num)
-
-            frames_to_render -= existing_frames
-            if existing_frames:
-                _log(f"[{name}] Found {len(existing_frames)} existing frame(s), skipping those")
-            if not frames_to_render:
-                _log(f"[{name}] All frames already exist, skipping animation render")
-
-        # Render frames individually to support skipping
-        if frames_to_render:
-            _log(f"[{name}] Playblasting (Cycles {scene.cycles.samples} samples) -> {effective_frames_dir}")
-            for frame_num in sorted(frames_to_render):
-                scene.frame_set(frame_num)
-                frame_file = os.path.join(effective_frames_dir, f"frame_{frame_num:04d}.png")
-                scene.render.filepath = frame_file
-                bpy.ops.render.render(write_still=True)
-            _log(f"[{name}] Playblast frame sequence complete.")
-        else:
-            _log(f"[{name}] No frames to render (all exist or skipped)")
-
-        # Convert PNG sequence to MP4 using FFmpeg
-        ffmpeg_cmd = [
-            "ffmpeg",
-            "-y",  # Overwrite output file
-            "-framerate", str(scene.render.fps),
-            "-i", os.path.join(effective_frames_dir, "frame_%04d.png"),
-            "-c:v", "libx264",
-            "-pix_fmt", "yuv420p",
-            mp4
-        ]
-        try:
-            subprocess.run(ffmpeg_cmd, check=True, capture_output=True)
-            _log(f"[{name}] MP4 conversion complete -> {mp4}")
-        except subprocess.CalledProcessError as e:
-            _log(f"[{name}] FFmpeg conversion failed: {e.stderr.decode()}")
-        except FileNotFoundError:
-            _log(f"[{name}] FFmpeg not found on system PATH. PNG frames saved to {png_sequence_dir}")
+# Convert PNG sequence to MP4 using FFmpeg
+ffmpeg_cmd = [
+    "ffmpeg",
+    "-y",
+    "-framerate", str(scene.render.fps),
+    "-i", os.path.join(effective_frames_dir, "frame_%04d.png"),
+    "-c:v", "libx264",
+    "-pix_fmt", "yuv420p",
+    mp4
+]
+try:
+    subprocess.run(ffmpeg_cmd, check=True, capture_output=True)
+    _log(f"[{name}] MP4 conversion complete -> {mp4}")
+except subprocess.CalledProcessError as e:
+    _log(f"[{name}] FFmpeg conversion failed: {e.stderr.decode()}")
+except FileNotFoundError:
+    _log(f"[{name}] FFmpeg not found on system PATH. PNG frames saved to {png_sequence_dir}")
 
 # ---------------------------------------------------------------------------
 # Final still — last frame only
