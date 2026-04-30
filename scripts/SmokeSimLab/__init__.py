@@ -43,7 +43,7 @@ Requires Blender 4.x (tested on 4.5.5 and 5.1.1) on Windows 10/11.  May work on 
 bl_info = {
     "name":        "SmokeSimLab",
     "author":      "SmokeSimLab",
-    "version":     (0, 1, 18),
+    "version":     (0, 1, 19),
     "blender":     (4, 0, 0),
     "location":    "View3D > Sidebar > SmokeLab",
     "description": "Batch smoke simulation parameter sweeper with CSV logging",
@@ -55,10 +55,12 @@ bl_info = {
 import bpy
 import math
 import os
+import re
 import shutil
 import itertools
 import json
 import subprocess
+import time
 
 print(f"SmokeSimLab {'.'.join(str(v) for v in bl_info['version'])} loaded")
 
@@ -827,6 +829,8 @@ class SmokeSettings(bpy.types.PropertyGroup):
     batch_job_text:       bpy.props.StringProperty(default="")
     batch_job_factor:     bpy.props.FloatProperty(default=0.0, min=0.0, max=1.0)
     batch_complete_msg:   bpy.props.StringProperty(default="")
+    batch_start_time:     bpy.props.FloatProperty(default=0.0)
+    batch_time_remaining: bpy.props.StringProperty(default="")
     show_results:         bpy.props.BoolProperty(
         name="Display Results When Finished",
         description="After all jobs complete, create a grid of result planes in a SmokeOutput collection",
@@ -1087,6 +1091,66 @@ def _read_job_stage(jobs_dir):
     return "", 0.0, 0.0, ""
 
 
+def _format_eta(seconds):
+    """Return a human-readable time-remaining string."""
+    if seconds < 60:
+        return f"~{int(seconds)}s remaining"
+    if seconds < 3600:
+        return f"~{int(seconds / 60)} min remaining"
+    h = int(seconds / 3600)
+    m = int((seconds % 3600) / 60)
+    return f"~{h}h {m}min remaining"
+
+
+def _read_bake_progress(jobs_dir):
+    """Return (frames_baked, frame_end) for the actively-baking job, or None.
+
+    Scans the currently-running job's log for the 'Baking...' keyword, then
+    counts unique frame numbers in the job's Cache/.../data/*.vdb files to
+    derive real-time bake progress without any changes to the worker script.
+    """
+    try:
+        all_files = set(os.listdir(jobs_dir))
+    except OSError:
+        return None
+
+    for log_file in reversed(sorted(f for f in all_files if f.endswith(".log"))):
+        if log_file[:-4] + ".done" in all_files:
+            continue
+        try:
+            with open(os.path.join(jobs_dir, log_file), "r", errors="replace") as fh:
+                tail = fh.read()[-4096:]
+        except OSError:
+            continue
+
+        if "Baking..." not in tail or "Bake complete" in tail:
+            return None
+
+        json_path = os.path.join(jobs_dir, log_file[:-4] + ".json")
+        try:
+            with open(json_path) as fh:
+                job_data = json.load(fh)
+        except (OSError, json.JSONDecodeError):
+            return None
+
+        frame_end   = job_data.get("frame_end", 0)
+        output_path = job_data.get("output_path", "")
+        name        = job_data.get("name", "")
+        if not (output_path and name and frame_end):
+            return None
+
+        data_dir     = os.path.join(output_path, "Cache", name, "data")
+        frames_baked = set()
+        if os.path.isdir(data_dir):
+            for f in os.listdir(data_dir):
+                m = re.search(r'_(\d{4})\.vdb$', f)
+                if m:
+                    frames_baked.add(int(m.group(1)))
+        return len(frames_baked), frame_end
+
+    return None
+
+
 def _poll_batch_progress():
     """
     Timer callback — updates overall and sub-task progress bars.
@@ -1125,6 +1189,7 @@ def _poll_batch_progress():
             s.batch_job_text       = ""
             s.batch_job_factor     = 0.0
             s.batch_jobs_dir       = ""
+            s.batch_time_remaining = ""
             _redraw_panels()
             if s.show_results:
                 bpy.app.timers.register(_setup_results_deferred, first_interval=0.5)
@@ -1134,6 +1199,22 @@ def _poll_batch_progress():
         s.batch_progress       = f"{done} of {total} job(s) complete"
         (s.batch_subtask_text, s.batch_subtask_factor,
          s.batch_job_factor, s.batch_job_text) = _read_job_stage(jobs_dir)
+
+        # Refine the baking sub-task bar with real frame-level progress
+        if "Baking simulation" in s.batch_subtask_text:
+            bake_info = _read_bake_progress(jobs_dir)
+            if bake_info:
+                baked, total_frames = bake_info
+                if total_frames > 0:
+                    s.batch_subtask_text   = f"Baking: frame {baked} / {total_frames}"
+                    s.batch_subtask_factor = baked / total_frames
+
+        # Time remaining estimate based on average time per completed job
+        if done > 0 and s.batch_start_time > 0:
+            elapsed = time.time() - s.batch_start_time
+            eta     = (elapsed / done) * (total - done)
+            s.batch_time_remaining = _format_eta(eta)
+
         _redraw_panels()
         return 5.0
 
@@ -1205,6 +1286,8 @@ class SMOKE_OT_run_batch(bpy.types.Operator):
         s.batch_subtask_factor = 0.0
         s.batch_job_text       = ""
         s.batch_job_factor     = 0.0
+        s.batch_start_time     = time.time()
+        s.batch_time_remaining = "Estimating..."
 
         # Launch the bat in a new console window; returns immediately.
         # cwd is set to output_path so the new cmd starts with a valid directory.
@@ -1464,20 +1547,21 @@ class SMOKE_OT_setup_results(bpy.types.Operator):
             obj.data.materials.append(mat)
             planes.append(obj)
 
-        # Switch active 3D viewport to top view, frame planes, material preview
-        for area in context.screen.areas:
-            if area.type != 'VIEW_3D':
-                continue
-            bpy.ops.object.select_all(action='DESELECT')
-            for ob in planes:
-                ob.select_set(True)
-            if planes:
+        # Switch to top view, frame all result planes, Material Preview shading.
+        # context.area is already a 3D viewport — set by _setup_results_deferred.
+        # view_axis and view_selected both require a WINDOW region in the override.
+        area = context.area
+        if area and area.type == 'VIEW_3D' and planes:
+            region = next((r for r in area.regions if r.type == 'WINDOW'), None)
+            if region:
+                bpy.ops.object.select_all(action='DESELECT')
+                for ob in planes:
+                    ob.select_set(True)
                 context.view_layer.objects.active = planes[0]
-            with context.temp_override(area=area):
-                bpy.ops.view3d.view_axis(type='TOP')
-                bpy.ops.view3d.view_selected()
+                with context.temp_override(area=area, region=region):
+                    bpy.ops.view3d.view_axis(type='TOP')
+                    bpy.ops.view3d.view_selected()
                 area.spaces.active.shading.type = 'MATERIAL'
-            break
 
         self.report({'INFO'}, f"SmokeOutput: {len(planes)} result plane(s) created")
         return {'FINISHED'}
@@ -1766,6 +1850,9 @@ class SMOKE_PT_panel(bpy.types.Panel):
             except AttributeError:
                 layout.label(text=s.batch_progress, icon='TIME')
 
+            if s.batch_time_remaining:
+                layout.label(text=s.batch_time_remaining, icon='TIME')
+
 
 # ---------------------------------------------------------------------------
 # File-load reset
@@ -1839,6 +1926,8 @@ def _reset_on_load(dummy=None):
         s.batch_subtask_factor = 0.0
         s.batch_job_text       = ""
         s.batch_job_factor     = 0.0
+        s.batch_start_time     = 0.0
+        s.batch_time_remaining = ""
 
 
 # ---------------------------------------------------------------------------
