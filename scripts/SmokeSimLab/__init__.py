@@ -43,7 +43,7 @@ Requires Blender 4.x (tested on 4.5.5 and 5.1.1) on Windows 10/11.  May work on 
 bl_info = {
     "name":        "SmokeSimLab",
     "author":      "SmokeSimLab",
-    "version":     (0, 1, 26),
+    "version":     (0, 1, 27),
     "blender":     (4, 0, 0),
     "location":    "View3D > Sidebar > SmokeLab",
     "description": "Batch smoke simulation parameter sweeper with CSV logging",
@@ -435,9 +435,11 @@ def export_batch(context):
     # ── Locate and copy worker script ────────────────────────────────────────
     # __file__ is reliable here because we are installed as a proper addon,
     # so it points to the SmokeSimLab folder, not the .blend file.
-    addon_dir   = os.path.dirname(os.path.abspath(__file__))
-    src_worker  = os.path.join(addon_dir, "smoke_worker.py")
-    dest_worker = os.path.join(output_path, "smoke_worker.py")
+    addon_dir      = os.path.dirname(os.path.abspath(__file__))
+    src_worker     = os.path.join(addon_dir, "smoke_worker.py")
+    dest_worker    = os.path.join(output_path, "smoke_worker.py")
+    src_launcher   = os.path.join(addon_dir, "smoke_launcher.py")
+    dest_launcher  = os.path.join(output_path, "smoke_launcher.py")
 
     if not os.path.exists(src_worker):
         raise FileNotFoundError(
@@ -446,6 +448,8 @@ def export_batch(context):
             f"Re-install the SmokeSimLab addon."
         )
     shutil.copy2(src_worker, dest_worker)
+    if os.path.exists(src_launcher):
+        shutil.copy2(src_launcher, dest_launcher)
 
     # ── Write .bat header ────────────────────────────────────────────────────
     bat_lines = [
@@ -470,6 +474,7 @@ def export_batch(context):
         job_data = {
             "params":         p,
             "name":           name,
+            "blend_file":     blend_file,
             "output_path":    output_path,
             "domain_name":    s.domain_obj.name,
             "frame_end":      frame_end,
@@ -490,25 +495,27 @@ def export_batch(context):
         with open(job_path, "w") as fh:
             json.dump(job_data, fh, indent=2)
 
-        if s.render_mode == "EEVEE":
-            blender_cmd = (
+        # smoke_launcher.py wraps Blender, detects crash dialogs (WerFault),
+        # saves crash logs, and exits non-zero so the batch marks the job failed.
+        # Falls back to calling Blender directly if the launcher was not exported.
+        if os.path.exists(dest_launcher):
+            run_cmd = f'python "{dest_launcher}" "{blender_exe}" "{job_path}"'
+        elif s.render_mode == "EEVEE":
+            run_cmd = (
                 f'"{blender_exe}" "{blend_file}" '
                 f'--window-geometry 0 0 100 100 --factory-startup '
                 f'--python "{dest_worker}" -- "{job_path}"'
             )
         else:
-            blender_cmd = (
+            run_cmd = (
                 f'"{blender_exe}" "{blend_file}" '
                 f'--background --factory-startup '
-                f'--python "{dest_worker}" -- "{job_path}"'
+                f'--python "{dest_worker}" -- "{job_path}" 2>nul'
             )
 
-        # stdout is NOT redirected so live output appears in the batch window.
-        # stderr (Blender C++ startup noise) is suppressed with 2>nul.
-        # The worker writes its own log file via _log() for progress tracking.
         bat_lines += [
             f"echo === Job {i+1}/{len(jobs)}: {name} ===",
-            f'{blender_cmd} 2>nul',
+            run_cmd,
             "if errorlevel 1 (",
             "    echo   WARNING: job exited with error",
             "    set /a ERRORS+=1",
@@ -1186,6 +1193,7 @@ def _count_png_frames(jobs_dir, log_stem, since=0.0):
 
 def _format_eta(seconds):
     """Return a human-readable time-remaining string."""
+    seconds = max(0.0, seconds)
     if seconds < 60:
         return f"~{int(seconds)}s remaining"
     if seconds < 3600:
@@ -1421,6 +1429,17 @@ def _poll_batch_progress():
                 still_remaining = _STILL_SECS_DEFAULT
 
             job_remaining = setup_remaining + bake_remaining + render_remaining + still_remaining
+            if job_remaining < 0:
+                import sys
+                print(
+                    f"[SmokeSimLab] WARNING: negative job_remaining={job_remaining:.1f}  "
+                    f"setup={setup_remaining:.1f}  bake={bake_remaining:.1f}  "
+                    f"render={render_remaining:.1f}  still={still_remaining:.1f}  "
+                    f"bake_start={s.batch_bake_start_time:.0f}  frames_baked={frames_baked}  "
+                    f"frame_end={frame_end}  resolution={s.batch_resolution}",
+                    file=sys.stderr,
+                )
+                job_remaining = 0.0
             if job_remaining > 0:
                 job_factor = min(elapsed_in_job / (elapsed_in_job + job_remaining), 0.99)
             else:

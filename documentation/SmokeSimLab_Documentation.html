@@ -400,7 +400,7 @@
       <span class="badge">Windows</span>
       <span class="badge">Mantaflow</span>
       <span class="badge">Cycles GPU / EEVEE</span>
-      <span class="badge">v0.1.26</span>
+      <span class="badge">v0.1.27</span>
     </div>
   </header>
 
@@ -800,6 +800,36 @@
         </tr>
       </table>
 
+      <h3>Crash Recovery</h3>
+      <p>
+        When Blender crashes mid-job, Windows normally shows a crash dialog
+        (<em>Blender has stopped working</em>) and suspends the process until the user
+        clicks a button — freezing the entire batch.
+      </p>
+      <p>
+        SmokeSimLab v0.1.27 includes <code>smoke_launcher.py</code>, a Python wrapper
+        that is copied to your output folder at Export time. The batch file calls it
+        instead of Blender directly. The launcher monitors for the Windows crash dialog
+        process (<code>WerFault.exe</code>), and when detected:
+      </p>
+      <ul>
+        <li>Saves <code>%TEMP%\blender.crash.txt</code> to <code>jobs/&lt;name&gt;_crash_&lt;timestamp&gt;.txt</code>
+            so every crash log is preserved.</li>
+        <li>Silently dismisses the dialog and terminates Blender.</li>
+        <li>Marks the job as failed so the batch continues to the next job.</li>
+        <li>Writes a <code>jobs/&lt;name&gt;.crashed</code> marker file for reference.</li>
+      </ul>
+      <p>
+        The failed job will be picked up by <strong>Retry Failed Jobs</strong> or by
+        <strong>Automatically Retry Failed Jobs</strong> if that option is enabled.
+      </p>
+      <div class="note">
+        <strong>Requires Python on PATH.</strong> <code>smoke_launcher.py</code> is run
+        with the system Python interpreter. Python 3.x is required and must be accessible
+        as <code>python</code> from the command line. If Python is not found, the batch
+        falls back to calling Blender directly (no crash protection).
+      </div>
+
       <h3>Retry Failed Jobs</h3>
       <p>
         If any jobs failed, a <strong>Retry Failed Jobs</strong> button appears after the
@@ -1195,6 +1225,25 @@ _RENDER_RATE_EEVEE_PER_PIXEL_FRAME  = 3.61e-9   # s / (pixel × frame)</pre>
       <h2>Troubleshooting</h2>
 
       <div class="card">
+        <h3>Blender crash dialog freezes the batch</h3>
+        <p>When Blender crashes, Windows suspends its process while showing a crash dialog,
+          which blocks the batch from continuing. SmokeSimLab v0.1.27+ includes
+          <code>smoke_launcher.py</code> which detects and dismisses this dialog automatically.
+          Ensure Python is on your system PATH so the launcher can run. If the batch was
+          exported with an older version, re-export to get the updated batch file that uses
+          the launcher.</p>
+      </div>
+
+      <div class="card">
+        <h3>Crash logs accumulate in the jobs/ folder</h3>
+        <p>Each detected Blender crash produces a <code>job_NNNN_crash_YYYYMMDD_HHMMSS.txt</code>
+          file in the <code>jobs/</code> directory copied from <code>%TEMP%\blender.crash.txt</code>.
+          These files preserve the full stack trace for diagnosis. Review them to identify
+          patterns (e.g., consistent crash in the same simulation stage or at the same
+          resolution). They are safe to delete once reviewed.</p>
+      </div>
+
+      <div class="card">
         <h3>Export Batch shows "smoke_worker.py not found"</h3>
         <p>Both files must be installed together. Re-install the addon using the zip file.
           Do not install <code>__init__.py</code> and <code>smoke_worker.py</code> separately.</p>
@@ -1312,7 +1361,7 @@ _RENDER_RATE_EEVEE_PER_PIXEL_FRAME  = 3.61e-9   # s / (pixel × frame)</pre>
   </div>
 
   <footer>
-    SmokeSimLab v0.1.26 — Blender 4.x / 5.x addon —
+    SmokeSimLab v0.1.27 — Blender 4.x / 5.x addon —
     <a href="https://github.com/rickpalo/SmokeSimLab">GitHub</a>
   </footer>
 

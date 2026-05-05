@@ -8,6 +8,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
 
 from SmokeSimLab import _count_png_frames, _format_eta
 
+# Regression: _format_eta must never produce negative strings.
+
 
 # ---------------------------------------------------------------------------
 # _format_eta
@@ -40,6 +42,17 @@ class TestFormatEta:
 
     def test_under_sixty_is_seconds_not_minutes(self):
         assert "min" not in _format_eta(59)
+
+    # Regression: Bar 2 showed ~-60000s when job_remaining went negative.
+    # _format_eta must clamp negatives to zero rather than propagating them.
+    def test_negative_clamped_to_zero(self):
+        s = _format_eta(-60000)
+        assert "-" not in s
+        assert "0s" in s
+
+    def test_negative_one_clamped(self):
+        s = _format_eta(-1)
+        assert "-" not in s
 
 
 # ---------------------------------------------------------------------------
