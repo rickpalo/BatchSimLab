@@ -3,10 +3,11 @@ import datetime
 import json
 import os
 import sys
+from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts", "SmokeSimLab"))
 
-from smoke_launcher import _save_crash_log
+from smoke_launcher import _find_werfault_for_pid, _save_crash_log
 
 
 # ---------------------------------------------------------------------------
@@ -82,6 +83,48 @@ class TestSaveCrashLog:
         assert len(crash_files) == 2
         assert crash_files[0].read_text() == "crash A"
         assert crash_files[1].read_text() == "crash B"
+
+
+# ---------------------------------------------------------------------------
+# _find_werfault_for_pid  (regression: wmic UTF-16 silent failure)
+# ---------------------------------------------------------------------------
+
+class TestFindWerfaultForPid:
+    def _mock_run(self, stdout_text):
+        m = MagicMock()
+        m.stdout = stdout_text
+        return m
+
+    def test_returns_pid_when_powershell_finds_match(self):
+        """Returns WerFault PID when PowerShell outputs a matching PID."""
+        with patch("smoke_launcher.subprocess.run", return_value=self._mock_run("56789\n")):
+            assert _find_werfault_for_pid(12345) == 56789
+
+    def test_returns_none_when_no_werfault(self):
+        """Returns None when PowerShell returns empty output (no WerFault running)."""
+        with patch("smoke_launcher.subprocess.run", return_value=self._mock_run("")):
+            assert _find_werfault_for_pid(12345) is None
+
+    def test_returns_none_on_subprocess_exception(self):
+        """Returns None silently if PowerShell call raises."""
+        with patch("smoke_launcher.subprocess.run", side_effect=OSError("not found")):
+            assert _find_werfault_for_pid(12345) is None
+
+    def test_blender_pid_included_in_powershell_command(self):
+        """PowerShell command embeds the Blender PID so the filter is specific."""
+        calls = []
+        with patch("smoke_launcher.subprocess.run",
+                   side_effect=lambda *a, **kw: calls.append(a) or self._mock_run("")):
+            _find_werfault_for_pid(99999)
+        assert calls, "subprocess.run was not called"
+        cmd_str = " ".join(str(p) for p in calls[0][0])
+        assert "99999" in cmd_str
+
+    def test_skips_non_numeric_header_lines(self):
+        """Non-numeric lines in output (headers, warnings) are ignored."""
+        with patch("smoke_launcher.subprocess.run",
+                   return_value=self._mock_run("ProcessId\n56789\n")):
+            assert _find_werfault_for_pid(12345) == 56789
 
 
 # ---------------------------------------------------------------------------

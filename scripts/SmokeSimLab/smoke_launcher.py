@@ -25,7 +25,7 @@ Behaviour
        * Exits with code 1  (batch then writes job_NNNN.done = "error")
 4. If Blender exits normally: exits with Blender's exit code.
 
-No third-party dependencies — stdlib + wmic (built into Windows).
+No third-party dependencies — stdlib + PowerShell Get-CimInstance (built into Windows).
 """
 
 import datetime
@@ -48,28 +48,25 @@ def _find_werfault_for_pid(blender_pid):
     Return the PID of a WerFault.exe process targeting blender_pid, or None.
 
     WerFault is launched by Windows with:  WerFault.exe -u -p <pid> -s <key>
-    We match on '-p <blender_pid>' in the command line (more specific than a
-    plain substring match) to avoid false positives from other WerFault calls.
+
+    Uses PowerShell Get-CimInstance rather than wmic. wmic outputs UTF-16 on
+    Windows 11, which breaks subprocess text-mode decoding and silently returns
+    garbage — making crash detection appear to work but always miss the dialog.
     """
     try:
+        script = (
+            "Get-CimInstance Win32_Process -Filter \"Name='WerFault.exe'\" "
+            f"| Where-Object {{ $_.CommandLine -like '*-p {blender_pid}*' }} "
+            "| Select-Object -ExpandProperty ProcessId"
+        )
         result = subprocess.run(
-            ["wmic", "process", "where", "name='WerFault.exe'",
-             "get", "ProcessId,CommandLine", "/format:csv"],
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
             capture_output=True, text=True, timeout=10,
         )
-        target = f"-p {blender_pid}"
         for line in result.stdout.splitlines():
             line = line.strip()
-            if not line or "ProcessId" in line:
-                continue
-            if target in line:
-                # CSV columns from wmic: Node,CommandLine,ProcessId
-                parts = line.split(",")
-                if len(parts) >= 3:
-                    try:
-                        return int(parts[-1])
-                    except ValueError:
-                        pass
+            if line.isdigit():
+                return int(line)
     except Exception:
         pass
     return None

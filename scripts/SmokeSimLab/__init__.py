@@ -43,13 +43,13 @@ Requires Blender 4.x (tested on 4.5.5 and 5.1.1) on Windows 10/11.  May work on 
 bl_info = {
     "name":        "SmokeSimLab",
     "author":      "SmokeSimLab",
-    "version":     (0, 1, 29),
+    "version":     (0, 1, 30),
     "blender":     (4, 0, 0),
     "location":    "View3D > Sidebar > SmokeLab",
     "description": "Batch smoke simulation parameter sweeper with CSV logging",
     "doc_url":     "https://github.com/rickpalo/SmokeSimLab",
     "tracker_url": "https://github.com/rickpalo/SmokeSimLab/issues",
-    "category":    "Render",
+    "category":    "Fluid Simulation",
 }
 
 import bpy
@@ -65,7 +65,7 @@ import time
 
 print(f"SmokeSimLab {'.'.join(str(v) for v in bl_info['version'])} loaded")
 
-# Placeholder GitHub/documentation URL.  Update this when you have a real URL.
+
 DOCS_URL = "https://github.com/rickpalo/SmokeSimLab"
 
 # All iterable parameter base names — used by _clear_lists and generate_jobs.
