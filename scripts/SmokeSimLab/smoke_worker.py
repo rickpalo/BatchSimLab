@@ -20,6 +20,7 @@ import os
 import re
 import json
 import time as _time
+import datetime
 import atexit
 import subprocess
 
@@ -64,6 +65,35 @@ def _close_log():
         _log_file = None
 
 atexit.register(_close_log)
+
+
+# ---------------------------------------------------------------------------
+# Performance data logging
+# ---------------------------------------------------------------------------
+
+def _append_perf_record(output_path, record):
+    """Append one performance record to <output_path>/perf_log.json.
+
+    Each record captures timing data from a single job run so the caller can
+    later fit the scaling constants:
+      bake_secs ≈ K_bake  × resolution³ × frames
+      render_secs ≈ K_render × width × height × frames
+    """
+    perf_path = os.path.join(output_path, "perf_log.json")
+    records = []
+    if os.path.exists(perf_path):
+        try:
+            with open(perf_path, "r", encoding="utf-8") as fh:
+                records = json.load(fh)
+        except (OSError, json.JSONDecodeError):
+            pass
+    record["timestamp"] = datetime.datetime.now().isoformat(timespec="seconds")
+    records.append(record)
+    try:
+        with open(perf_path, "w", encoding="utf-8") as fh:
+            json.dump(records, fh, indent=2)
+    except OSError as e:
+        _log(f"  WARNING: could not write perf_log.json: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -255,9 +285,10 @@ if not obj:
     _log(f'ERROR: object "{domain_name}" not found in scene')
     sys.exit(1)
 
-mod = obj.modifiers.get("Fluid")
+mod = next((m for m in obj.modifiers if m.type == 'FLUID'), None)
 if not mod:
-    _log(f'ERROR: no Fluid modifier on "{domain_name}"')
+    _log(f'ERROR: no Fluid modifier (type FLUID) on "{domain_name}" '
+         f'(modifiers found: {[m.name for m in obj.modifiers]})')
     sys.exit(1)
 
 d = mod.domain_settings
@@ -337,6 +368,15 @@ if use_existing_cache:
                 break
 
 d.cache_directory = effective_cache_dir
+
+# Enable resumable baking so a mid-bake crash can be continued on the next run.
+# Without this Blender does not store the solver checkpoint data alongside the
+# VDB output files, and bake_all() cannot resume from a partial cache.
+try:
+    d.cache_resumable = True
+except AttributeError:
+    _log(f"[{name}] WARNING: cache_resumable property not found — partial resume may not work")
+
 bpy.context.view_layer.update()
 _time.sleep(2.0)
 
@@ -362,12 +402,14 @@ rebaked_frames = set()
 if use_existing_cache and bake_complete:
     _log(f"[{name}] Use Existing Cache enabled — frame {frame_end} confirmed, skipping bake.")
     bake_seconds = 0.0
+    bake_skipped = True
     # rebaked_frames stays empty — all cache pre-existing, renders still valid
 
 elif use_existing_cache and baked_frames:
     # Partial bake from a previous crash — resume without freeing existing frames.
     # Only frames beyond the previous bake are recomputed.
     rebaked_frames = set(range(1, frame_end + 1)) - baked_frames
+    bake_skipped   = False
     _log(f"[{name}] Partial cache ({len(baked_frames)}/{frame_end} frames). Resuming bake...")
     _log(f"[{name}] Baking...")
     bake_start   = _time.time()
@@ -379,6 +421,7 @@ elif use_existing_cache and baked_frames:
 else:
     # Full rebake — all frames recomputed, any existing renders are stale
     rebaked_frames = set(range(1, frame_end + 1))
+    bake_skipped   = False
     if effective_cache_dir != cache_dir:
         # No usable files in alt dir — fall back to this job's own cache dir
         effective_cache_dir = cache_dir
@@ -469,13 +512,17 @@ if use_placeholders:
         _log(f"[{name}] All frames already exist, skipping animation render")
 
 # Render frames individually to support partial resume
+frames_actually_rendered = len(frames_to_render)
+render_seconds = 0.0
 if frames_to_render:
     _log(f"[{name}] Rendering animation ({len(frames_to_render)} frame(s)) -> {effective_frames_dir}")
+    render_start = _time.time()
     for frame_num in sorted(frames_to_render):
         scene.frame_set(frame_num)
         frame_file = os.path.join(effective_frames_dir, f"frame_{frame_num:04d}.png")
         scene.render.filepath = frame_file
         bpy.ops.render.render(write_still=True)
+    render_seconds = _time.time() - render_start
     _log(f"[{name}] Playblast frame sequence complete.")
 else:
     _log(f"[{name}] No frames to render (all exist or skipped)")
@@ -558,6 +605,37 @@ with open(csv_path, "a", encoding="utf-8") as fh:
     ]) + "\n")
 
 _log(f"[{name}] Done. Results -> {csv_path}")
+
+# ---------------------------------------------------------------------------
+# Performance data — append one record to perf_log.json
+# ---------------------------------------------------------------------------
+
+_res       = int(p["resolution"])
+_res3      = _res ** 3
+_rx        = scene.render.resolution_x
+_ry        = scene.render.resolution_y
+_pixels    = _rx * _ry
+
+_perf = {
+    "job_name":    name,
+    "resolution":  _res,
+    "frame_end":   frame_end,
+    # Bake
+    "bake_skipped":            bake_skipped,
+    "bake_seconds":            round(bake_seconds, 2) if not bake_skipped else None,
+    "bake_secs_per_frame":     round(bake_seconds / frame_end, 6) if not bake_skipped and frame_end > 0 else None,
+    "bake_secs_per_res3_frame": round(bake_seconds / (_res3 * frame_end), 12) if not bake_skipped and _res3 > 0 and frame_end > 0 else None,
+    # Render
+    "render_engine":           render_mode,
+    "render_width":            _rx,
+    "render_height":           _ry,
+    "frames_rendered":         frames_actually_rendered,
+    "render_seconds":          round(render_seconds, 2) if frames_actually_rendered > 0 else None,
+    "render_secs_per_frame":   round(render_seconds / frames_actually_rendered, 6) if frames_actually_rendered > 0 else None,
+    "render_secs_per_pixel_frame": round(render_seconds / (_pixels * frames_actually_rendered), 12) if frames_actually_rendered > 0 and _pixels > 0 else None,
+}
+_append_perf_record(output_path, _perf)
+_log(f"[{name}] Performance record written to perf_log.json")
 
 # ---------------------------------------------------------------------------
 # Exit
