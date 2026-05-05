@@ -25,7 +25,7 @@ Behaviour
        * Exits with code 1  (batch then writes job_NNNN.done = "error")
 4. If Blender exits normally: exits with Blender's exit code.
 
-No third-party dependencies — stdlib + PowerShell Get-CimInstance (built into Windows).
+No third-party dependencies — stdlib + tasklist.exe (built into Windows).
 """
 
 import datetime
@@ -43,30 +43,28 @@ _POLL_INTERVAL = 2.0   # seconds between crash-dialog checks
 # Crash-dialog detection
 # ---------------------------------------------------------------------------
 
-def _find_werfault_for_pid(blender_pid):
-    """
-    Return the PID of a WerFault.exe process targeting blender_pid, or None.
+def _find_werfault_for_pid(blender_pid):  # blender_pid kept for API compatibility
+    """Return a WerFault.exe PID if one is running, or None.
 
-    WerFault is launched by Windows with:  WerFault.exe -u -p <pid> -s <key>
+    Uses tasklist /FI rather than wmic or Get-CimInstance. Both of those
+    require reading the CommandLine property of another process, which
+    silently returns null without elevation on Windows 11. tasklist needs
+    no special privileges and works reliably.
 
-    Uses PowerShell Get-CimInstance rather than wmic. wmic outputs UTF-16 on
-    Windows 11, which breaks subprocess text-mode decoding and silently returns
-    garbage — making crash detection appear to work but always miss the dialog.
+    Jobs run sequentially (one Blender at a time), so any WerFault.exe
+    present while our child Blender is alive is targeting our Blender.
     """
     try:
-        script = (
-            "Get-CimInstance Win32_Process -Filter \"Name='WerFault.exe'\" "
-            f"| Where-Object {{ $_.CommandLine -like '*-p {blender_pid}*' }} "
-            "| Select-Object -ExpandProperty ProcessId"
-        )
         result = subprocess.run(
-            ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+            ["tasklist", "/FI", "IMAGENAME eq WerFault.exe", "/FO", "CSV", "/NH"],
             capture_output=True, text=True, timeout=10,
         )
         for line in result.stdout.splitlines():
             line = line.strip()
-            if line.isdigit():
-                return int(line)
+            if line.startswith('"WerFault.exe"'):
+                parts = line.split('","')
+                if len(parts) >= 2:
+                    return int(parts[1])
     except Exception:
         pass
     return None

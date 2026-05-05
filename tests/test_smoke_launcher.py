@@ -86,44 +86,54 @@ class TestSaveCrashLog:
 
 
 # ---------------------------------------------------------------------------
-# _find_werfault_for_pid  (regression: wmic UTF-16 silent failure)
+# _find_werfault_for_pid  (regression: wmic UTF-16 / CIM privilege failures)
 # ---------------------------------------------------------------------------
 
 class TestFindWerfaultForPid:
+    # tasklist /FO CSV /NH output when WerFault is running:
+    # "WerFault.exe","56789","Console","1","15,164 K"
+    TASKLIST_HIT  = '"WerFault.exe","56789","Console","1","15,164 K"\r\n'
+    TASKLIST_MISS = 'INFO: No tasks are running which match the specified criteria.\r\n'
+
     def _mock_run(self, stdout_text):
         m = MagicMock()
         m.stdout = stdout_text
         return m
 
-    def test_returns_pid_when_powershell_finds_match(self):
-        """Returns WerFault PID when PowerShell outputs a matching PID."""
-        with patch("smoke_launcher.subprocess.run", return_value=self._mock_run("56789\n")):
+    def test_returns_pid_when_werfault_running(self):
+        """Returns WerFault PID from tasklist CSV output."""
+        with patch("smoke_launcher.subprocess.run",
+                   return_value=self._mock_run(self.TASKLIST_HIT)):
             assert _find_werfault_for_pid(12345) == 56789
 
     def test_returns_none_when_no_werfault(self):
-        """Returns None when PowerShell returns empty output (no WerFault running)."""
-        with patch("smoke_launcher.subprocess.run", return_value=self._mock_run("")):
+        """Returns None when tasklist reports no matching process."""
+        with patch("smoke_launcher.subprocess.run",
+                   return_value=self._mock_run(self.TASKLIST_MISS)):
             assert _find_werfault_for_pid(12345) is None
 
     def test_returns_none_on_subprocess_exception(self):
-        """Returns None silently if PowerShell call raises."""
+        """Returns None silently if tasklist call raises."""
         with patch("smoke_launcher.subprocess.run", side_effect=OSError("not found")):
             assert _find_werfault_for_pid(12345) is None
 
-    def test_blender_pid_included_in_powershell_command(self):
-        """PowerShell command embeds the Blender PID so the filter is specific."""
+    def test_uses_tasklist_not_wmic(self):
+        """Detection uses tasklist (no-privilege) rather than wmic or powershell."""
         calls = []
         with patch("smoke_launcher.subprocess.run",
                    side_effect=lambda *a, **kw: calls.append(a) or self._mock_run("")):
             _find_werfault_for_pid(99999)
         assert calls, "subprocess.run was not called"
-        cmd_str = " ".join(str(p) for p in calls[0][0])
-        assert "99999" in cmd_str
+        cmd = calls[0][0]
+        assert cmd[0].lower() == "tasklist"
+        assert "wmic" not in " ".join(str(p) for p in cmd).lower()
+        assert "powershell" not in " ".join(str(p) for p in cmd).lower()
 
-    def test_skips_non_numeric_header_lines(self):
-        """Non-numeric lines in output (headers, warnings) are ignored."""
+    def test_multiple_werfault_processes_returns_first(self):
+        """If multiple WerFault rows appear, the first PID is returned."""
+        two_rows = self.TASKLIST_HIT + '"WerFault.exe","99999","Console","1","8,000 K"\r\n'
         with patch("smoke_launcher.subprocess.run",
-                   return_value=self._mock_run("ProcessId\n56789\n")):
+                   return_value=self._mock_run(two_rows)):
             assert _find_werfault_for_pid(12345) == 56789
 
 
