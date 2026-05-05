@@ -419,14 +419,19 @@ elif use_existing_cache and baked_frames:
     _time.sleep(2.0)
 
 else:
-    # Full rebake — all frames recomputed, any existing renders are stale
+    # Full rebake — all frames recomputed, any existing renders are stale.
+    # Reaches here when use_existing_cache is False, OR when it is True but
+    # no VDB files were found (first run, or crash before any frames wrote).
     rebaked_frames = set(range(1, frame_end + 1))
     bake_skipped   = False
     if effective_cache_dir != cache_dir:
         # No usable files in alt dir — fall back to this job's own cache dir
         effective_cache_dir = cache_dir
         d.cache_directory   = cache_dir
-    _log(f"[{name}] Freeing previous cache...")
+    if use_existing_cache:
+        _log(f"[{name}] No existing cache found — performing full bake.")
+    else:
+        _log(f"[{name}] Freeing previous cache...")
     bpy.ops.fluid.free_all()
     _time.sleep(2.0)
 
