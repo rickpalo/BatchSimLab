@@ -43,7 +43,7 @@ Requires Blender 4.x (tested on 4.5.5 and 5.1.1) on Windows 10/11.  May work on 
 bl_info = {
     "name":        "SmokeSimLab",
     "author":      "SmokeSimLab",
-    "version":     (0, 1, 32),
+    "version":     (0, 1, 33),
     "blender":     (4, 0, 0),
     "location":    "View3D > Sidebar > SmokeLab",
     "description": "Batch smoke simulation parameter sweeper with CSV logging",
@@ -1118,8 +1118,15 @@ _STAGES = (
 _TOTAL_SUBTASKS = 4
 
 
+_LOG_DONE_MARKERS = ("Done. Results", "Performance record written to perf_log")
+
 def _find_running_log(jobs_dir):
-    """Return (log_file, log_stem, tail) for the current active job, or None."""
+    """Return (log_file, log_stem, tail) for the current active job, or None.
+
+    A job is considered finished if its log tail contains a done marker OR a
+    .done file exists.  The done-marker check handles the sync-lag window where
+    .done has not yet arrived on this machine even though the job completed.
+    """
     try:
         all_files = set(os.listdir(jobs_dir))
     except OSError:
@@ -1131,6 +1138,8 @@ def _find_running_log(jobs_dir):
             with open(os.path.join(jobs_dir, log_file), "r", errors="replace") as fh:
                 tail = fh.read()[-4096:]
         except OSError:
+            continue
+        if any(marker in tail for marker in _LOG_DONE_MARKERS):
             continue
         return log_file, log_file[:-4], tail
     return None
@@ -1305,18 +1314,28 @@ def _poll_batch_progress():
                 s.batch_still_start_time  = 0.0
                 s.batch_bake_secs_actual  = -1.0
                 s.batch_render_secs_actual = -1.0
+                s.batch_subtask_text      = ""
+                s.batch_subtask_factor    = 0.0
+                s.batch_job_text          = ""
+                s.batch_job_factor        = 0.0
 
             frame_end      = max(s.batch_frame_end, 1)
             elapsed_in_job = max(now - s.batch_job_start_time, 0.0) if s.batch_job_start_time > 0 else 0.0
 
-            # Determine current stage from log tail
+            # Determine current stage from log tail.
+            # Use rightmost (most recently written) keyword match, not the
+            # highest-completion-rank match.  reversed(_STAGES) would pick the
+            # most advanced stage found anywhere in the tail, which is wrong
+            # when an old run's later-stage lines still appear in the buffer.
             stage_label     = "Starting"
             stage_completed = 0
-            for keyword, label, completed in reversed(_STAGES):
-                if keyword in tail:
+            best_pos        = -1
+            for keyword, label, completed in _STAGES:
+                pos = tail.rfind(keyword)
+                if pos > best_pos:
+                    best_pos        = pos
                     stage_label     = label
                     stage_completed = completed
-                    break
 
             # Stage start time tracking (set once per job)
             if stage_label == "Baking simulation" and s.batch_bake_start_time == 0.0:
