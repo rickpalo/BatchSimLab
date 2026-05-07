@@ -258,13 +258,19 @@ name_prefix = name.rsplit('_', 1)[0]   # parameter key without job index
 output_path = cfg["output_path"]
 domain_name = cfg["domain_name"]
 frame_end   = cfg["frame_end"]
+frame_start = cfg.get("frame_start", 1)
 text_map    = cfg.get("text_objects", {})
 
 # Render mode from job config — defaults to 'CYCLES'
 # Set to 'EEVEE' in job JSON or export settings for windowed mode
-render_mode = cfg.get("render_mode", "CYCLES")
+render_mode        = cfg.get("render_mode", "CYCLES")
+render_samples     = cfg.get("render_samples", 16)
 use_placeholders   = cfg.get("use_placeholders", False)
 use_existing_cache = cfg.get("use_existing_cache", False)
+
+# Density scaling — applied before baking when maintain_density is True
+maintain_density        = cfg.get("maintain_density", False)
+density_base_resolution = cfg.get("density_base_resolution", int(p.get("resolution", 64)))
 
 render_dir = os.path.join(output_path, "Renders")
 cache_dir  = os.path.join(output_path, "Cache", name)
@@ -325,6 +331,29 @@ obj.select_set(True)
 # Let Mantaflow reinitialize with new settings before baking
 bpy.context.view_layer.update()
 _time.sleep(3.0)
+
+# ---------------------------------------------------------------------------
+# Maintain consistent density — scale emitter flow density with resolution
+# ---------------------------------------------------------------------------
+
+if maintain_density and density_base_resolution > 0:
+    job_resolution = int(p["resolution"])
+    density_ratio  = job_resolution / density_base_resolution
+    scaled = 0
+    for em_obj in bpy.data.objects:
+        for mod in em_obj.modifiers:
+            if mod.type == 'FLUID' and mod.fluid_type == 'FLOW':
+                try:
+                    base_dens = mod.flow_settings.density
+                    mod.flow_settings.density = base_dens * density_ratio
+                    _log(f"[{name}] Density: '{em_obj.name}' "
+                         f"{base_dens:.4f} → {mod.flow_settings.density:.4f} "
+                         f"(res {density_base_resolution}→{job_resolution})")
+                    scaled += 1
+                except AttributeError as exc:
+                    _log(f"[{name}] WARNING: density scale failed on '{em_obj.name}': {exc}")
+    if scaled == 0:
+        _log(f"[{name}] WARNING: maintain_density=True but no FLUID FLOW objects found in scene")
 
 # ---------------------------------------------------------------------------
 # Update text objects (before bake — no time available yet)
@@ -392,7 +421,7 @@ for _root, _dirs, files in os.walk(effective_cache_dir):
         if m:
             baked_frames.add(int(m.group(1)))
 
-bake_complete = (frame_end in baked_frames)
+bake_complete = all(f in baked_frames for f in range(frame_start, frame_end + 1))
 
 # rebaked_frames: frame numbers whose cache was RECOMPUTED this run.
 # Existing renders for these frames must NOT be used as placeholders, because
@@ -400,7 +429,8 @@ bake_complete = (frame_end in baked_frames)
 rebaked_frames = set()
 
 if use_existing_cache and bake_complete:
-    _log(f"[{name}] Use Existing Cache enabled — frame {frame_end} confirmed, skipping bake.")
+    _log(f"[{name}] Use Existing Cache enabled — all {frame_end - frame_start + 1} "
+         f"frames ({frame_start}–{frame_end}) confirmed, skipping bake.")
     bake_seconds = 0.0
     bake_skipped = True
     # rebaked_frames stays empty — all cache pre-existing, renders still valid
@@ -408,13 +438,16 @@ if use_existing_cache and bake_complete:
 elif use_existing_cache and baked_frames:
     # Partial bake from a previous crash — resume without freeing existing frames.
     # Only frames beyond the previous bake are recomputed.
-    rebaked_frames = set(range(1, frame_end + 1)) - baked_frames
+    rebaked_frames = set(range(frame_start, frame_end + 1)) - baked_frames
     bake_skipped   = False
     _log(f"[{name}] Partial cache ({len(baked_frames)}/{frame_end} frames). Resuming bake...")
     _log(f"[{name}] Baking...")
     bake_start   = _time.time()
-    bpy.ops.fluid.bake_all()
+    _bake_result = bpy.ops.fluid.bake_all()
     bake_seconds = _time.time() - bake_start
+    if 'FINISHED' not in _bake_result:
+        _log(f"[{name}] ERROR: Bake did not finish normally (result: {_bake_result})")
+        sys.exit(1)
     _log(f"[{name}] Bake complete in {bake_seconds:.0f}s.")
     _time.sleep(2.0)
 
@@ -422,7 +455,7 @@ else:
     # Full rebake — all frames recomputed, any existing renders are stale.
     # Reaches here when use_existing_cache is False, OR when it is True but
     # no VDB files were found (first run, or crash before any frames wrote).
-    rebaked_frames = set(range(1, frame_end + 1))
+    rebaked_frames = set(range(frame_start, frame_end + 1))
     bake_skipped   = False
     if effective_cache_dir != cache_dir:
         # No usable files in alt dir — fall back to this job's own cache dir
@@ -437,8 +470,11 @@ else:
 
     _log(f"[{name}] Baking...")
     bake_start   = _time.time()
-    bpy.ops.fluid.bake_all()
+    _bake_result = bpy.ops.fluid.bake_all()
     bake_seconds = _time.time() - bake_start
+    if 'FINISHED' not in _bake_result:
+        _log(f"[{name}] ERROR: Bake did not finish normally (result: {_bake_result})")
+        sys.exit(1)
     _log(f"[{name}] Bake complete in {bake_seconds:.0f}s.")
     _time.sleep(2.0)
 
@@ -466,7 +502,7 @@ _log(f"[{name}] Text objects updated (post-bake).")
 # ---------------------------------------------------------------------------
 
 scene             = bpy.context.scene
-scene.frame_start = 1
+scene.frame_start = frame_start
 scene.frame_end   = frame_end
 
 # ---------------------------------------------------------------------------
@@ -492,7 +528,10 @@ if use_placeholders:
             _log(f"[{name}] Found existing frames dir from different run: {alt_frames}")
 
 os.makedirs(effective_frames_dir, exist_ok=True)
-setup_cycles(scene, samples=32)
+if render_mode == "EEVEE":
+    setup_eevee(scene)
+else:
+    setup_cycles(scene, samples=render_samples)
 scene.render.image_settings.file_format = "PNG"
 
 # Check for existing frames if use_placeholders is enabled.
@@ -526,7 +565,10 @@ if frames_to_render:
         scene.frame_set(frame_num)
         frame_file = os.path.join(effective_frames_dir, f"frame_{frame_num:04d}.png")
         scene.render.filepath = frame_file
-        bpy.ops.render.render(write_still=True)
+        _render_result = bpy.ops.render.render(write_still=True)
+        if 'FINISHED' not in _render_result:
+            _log(f"[{name}] ERROR: Frame {frame_num} render did not finish (result: {_render_result})")
+            sys.exit(1)
     render_seconds = _time.time() - render_start
     _log(f"[{name}] Playblast frame sequence complete.")
 else:
@@ -559,10 +601,10 @@ png = os.path.join(render_dir, name + ".png")
 if render_mode == "EEVEE":
     # EEVEE — only works in windowed mode (no --background)
     if not setup_eevee(scene):
-        setup_cycles(scene, samples=128)
+        setup_cycles(scene, samples=render_samples)
 else:
     # Cycles GPU — default, works in background mode
-    setup_cycles(scene, samples=128)
+    setup_cycles(scene, samples=render_samples)
 
 # Must reset to PNG after FFMPEG playblast
 scene.render.image_settings.file_format = 'PNG'
@@ -570,7 +612,10 @@ scene.render.image_settings.file_format = 'PNG'
 scene.frame_set(frame_end)
 scene.render.filepath = png
 _log(f"[{name}] Rendering final frame ({scene.render.engine}) -> {png}")
-bpy.ops.render.render(write_still=True)
+_render_result = bpy.ops.render.render(write_still=True)
+if 'FINISHED' not in _render_result:
+    _log(f"[{name}] ERROR: Still render did not finish (result: {_render_result})")
+    sys.exit(1)
 _log(f"[{name}] PNG render complete. File exists: {os.path.exists(png)}")
 
 # ---------------------------------------------------------------------------

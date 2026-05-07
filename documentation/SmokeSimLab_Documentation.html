@@ -400,7 +400,7 @@
       <span class="badge">Windows</span>
       <span class="badge">Mantaflow</span>
       <span class="badge">Cycles GPU / EEVEE</span>
-      <span class="badge">v0.1.33</span>
+      <span class="badge">v0.1.38</span>
     </div>
   </header>
 
@@ -498,12 +498,84 @@
     <section id="parameters">
       <h2>Parameter Reference</h2>
 
+      <h3>Preset Save / Load</h3>
+      <p>
+        At the top of the Simulation Parameters section, a preset bar lets you save and
+        reload all parameter settings as a <code>.smokesettings</code> JSON file.
+      </p>
+      <table>
+        <tr><th>Control</th><th>Behaviour</th></tr>
+        <tr>
+          <td>Drop-down</td>
+          <td>Lists <code>.smokesettings</code> files found in the output folder (or the
+            last folder used for a save/load). Selecting a name immediately loads that
+            preset — no extra click required.</td>
+        </tr>
+        <tr>
+          <td>Save (disk icon)</td>
+          <td>Opens a file-save dialog starting in the <strong>Output folder</strong>
+            with no filename pre-filled. Type a name and click Save. The new preset
+            is immediately selected in the drop-down with no asterisk. Re-saving an
+            existing preset reopens the dialog pre-filled with its current path.</td>
+        </tr>
+        <tr>
+          <td>Load (folder icon)</td>
+          <td>Opens a file-browse dialog starting in the Output folder to pick any
+            <code>.smokesettings</code> file.</td>
+        </tr>
+        <tr>
+          <td>Asterisk (*)</td>
+          <td>Appears next to the preset name when the current settings differ from
+            the last saved or loaded file.</td>
+        </tr>
+      </table>
+      <p>
+        The preset file captures all Simulation Parameter settings (Resolution, Gas,
+        Dissolve, Noise, Iteration Mode). It does not capture project-specific settings
+        such as the domain object name, output path, or render mode.
+      </p>
+
+      <h3>Frame Range</h3>
+      <p>
+        Directly below the preset bar, a Frame Range section lets you override the
+        frame range used for baking and rendering.
+      </p>
+      <table>
+        <tr><th>Control</th><th>Behaviour</th></tr>
+        <tr>
+          <td><strong>Use Default Frames</strong> (checkbox)</td>
+          <td>When checked (default), the frame range is read directly from the
+            <code>.blend</code> scene at export time. When unchecked, the Frame Start
+            and Frame End fields below become editable.</td>
+        </tr>
+        <tr>
+          <td>Frame Start / Frame End</td>
+          <td>Active only when <em>Use Default Frames</em> is unchecked. Unchecking
+            pre-fills these fields with the current scene values so you can fine-tune
+            from there. Frame Offset is intentionally absent — per the Blender 5.1
+            manual, it is not considered during baking.</td>
+        </tr>
+      </table>
+
       <h3>Resolution</h3>
       <p>
         The number of voxels along the longest side of the fluid domain.
         Blender's default is 32. Higher values produce more detail but bake
         times increase roughly as the cube of the resolution — doubling the
         resolution multiplies bake time by ~8.
+      </p>
+      <p>
+        <strong>Maintain Consistent Density</strong> — checkbox at the bottom of the
+        Resolution section. When checked, the worker automatically finds every object
+        in the scene that has a <em>Fluid modifier set to Flow type</em> and scales
+        its Fluid&nbsp;Flow → Settings → Density proportionally for each job so that
+        visual smoke density stays constant across resolutions:
+      </p>
+      <pre>job_density = base_density × (job_resolution / default_resolution)</pre>
+      <p>
+        <code>base_density</code> is read from the <code>.blend</code> file at
+        runtime; <code>default_resolution</code> is the first (lowest) value in the
+        resolution sweep.
       </p>
 
       <h3>Gas Parameters</h3>
@@ -550,6 +622,13 @@
           <th>Description</th>
         </tr>
         <tr>
+          <td><strong>Iterate Both On and Off</strong></td>
+          <td>Appears at the top of the expanded section. When checked, one extra job
+            is added to the batch with Dissolve <em>disabled</em> so you can compare
+            dissolve-on vs. dissolve-off results in a single run. In All Combinations
+            mode the product includes both dissolve-on and dissolve-off passes.</td>
+        </tr>
+        <tr>
           <td>Dissolve Speed</td>
           <td>Number of frames until smoke fully dissolves. Blender default is 5.</td>
         </tr>
@@ -564,6 +643,19 @@
         Adds a high-resolution turbulent detail layer on top of the base simulation.
         The enable checkbox appears in the section header.
       </p>
+      <table>
+        <tr>
+          <th>Option</th>
+          <th>Description</th>
+        </tr>
+        <tr>
+          <td><strong>Iterate Both On and Off</strong></td>
+          <td>Appears at the top of the expanded section. When checked, one extra job
+            is added to the batch with Noise <em>disabled</em> so you can compare
+            noise-on vs. noise-off results in a single run. In All Combinations
+            mode the product includes both noise-on and noise-off passes.</td>
+        </tr>
+      </table>
       <table>
         <tr>
           <th>Parameter</th>
@@ -704,10 +796,11 @@
         <code>Renders/&lt;name&gt;_frames/</code> and deleted after the MP4 is assembled.
       </div>
       <div class="note">
-        <strong>Playblast samples:</strong> The animation render uses 32 Cycles samples by
-        default for speed. Edit <code>smoke_worker.py</code> and change
-        <code>scene.cycles.samples = 32</code> to adjust quality vs speed.
-        Re-export the batch after editing.
+        <strong>Engine consistency:</strong> Both the PNG frame sequence and the final still
+        use the same engine selected in the Render Mode panel. EEVEE jobs render all frames
+        with EEVEE; Cycles jobs render all frames with Cycles GPU. The number of samples for
+        both the frame sequence and the final still is set by the <strong>Render Samples</strong>
+        field in the Render section of the panel (default: 16).
       </div>
     </section>
 
@@ -762,10 +855,12 @@
           <td><strong>Bar 2 — Job</strong></td>
           <td>Stage X of 4 + ETA</td>
           <td>
-            Estimated time remaining for the current job. Each stage (Setup, Bake,
-            Animation, Still) uses a three-tier estimate: actual elapsed time when
-            a real-time rate can be computed, then a resolution- and dimension-based
-            prediction using historical performance constants, then a hard-coded default.
+            Cumulative progress across the entire current job (0 → 100%). Each stage
+            (Setup, Bake, Animation, Still) is allocated a percentage band proportional
+            to its time estimate. The bar advances within the active band and snaps to
+            the band end when a stage completes — it never goes backwards even if an
+            early frame was unexpectedly slow. The label shows the currently-active
+            stage number (1-based), and the ETA is time remaining for the full job.
           </td>
         </tr>
         <tr>
@@ -1361,7 +1456,7 @@ _RENDER_RATE_EEVEE_PER_PIXEL_FRAME  = 3.61e-9   # s / (pixel × frame)</pre>
   </div>
 
   <footer>
-    SmokeSimLab v0.1.33 — Blender 4.x / 5.x addon —
+    SmokeSimLab v0.1.38 — Blender 4.x / 5.x addon —
     <a href="https://github.com/rickpalo/SmokeSimLab">GitHub</a>
   </footer>
 

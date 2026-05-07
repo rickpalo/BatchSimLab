@@ -36,7 +36,10 @@ import subprocess
 import sys
 import time
 
-_POLL_INTERVAL = 2.0   # seconds between crash-dialog checks
+_POLL_INTERVAL     = 2.0    # seconds between crash-dialog / stale-log checks
+_STALE_LOG_TIMEOUT = 1800   # seconds of log inactivity before killing a stuck job
+                            # 30 min: generous enough for high-res bakes and long
+                            # animation renders, but still catches a frozen process
 
 
 # ---------------------------------------------------------------------------
@@ -127,6 +130,7 @@ def main():
     blend_file  = job_data.get("blend_file", "")
     render_mode = job_data.get("render_mode", "CYCLES")
     output_path = job_data.get("output_path", "")
+    log_path    = job_data.get("log_path", "")
 
     # smoke_worker.py is exported to output_path alongside run_smoke_batch.bat
     worker_py = os.path.join(output_path, "smoke_worker.py")
@@ -165,12 +169,46 @@ def main():
     blender_pid = proc.pid
     print(f"[smoke_launcher] Blender PID {blender_pid}")
 
+    # Stale-log watchdog state.
+    # last_log_mtime  — the mtime of the log file at the last poll where it existed.
+    # stale_since     — wall-clock time when the mtime first stopped changing;
+    #                   None means either the file hasn't appeared yet, or it was
+    #                   recently active.
+    last_log_mtime = None
+    stale_since    = None
+
     while True:
         if proc.poll() is not None:
             break  # Blender exited (clean or crash)
 
-        # Belt-and-suspenders: if SetErrorMode didn't suppress the dialog on
-        # this machine, detect and kill WerFault so the batch doesn't hang.
+        # ── Stale-log watchdog ───────────────────────────────────────────────
+        # If the job's log file exists but has not been written to for
+        # _STALE_LOG_TIMEOUT seconds, assume the process is frozen and kill it.
+        # This catches crashes that bypass WerFault (e.g. silent hangs in the
+        # Mantaflow solver or the Cycles GPU kernel).
+        if log_path:
+            try:
+                cur_mtime = os.path.getmtime(log_path)
+            except OSError:
+                cur_mtime = None
+            if cur_mtime is not None:
+                if cur_mtime != last_log_mtime:
+                    last_log_mtime = cur_mtime
+                    stale_since    = time.time()   # reset stale clock on any activity
+                elif stale_since is not None:
+                    idle_secs = time.time() - stale_since
+                    if idle_secs >= _STALE_LOG_TIMEOUT:
+                        print(f"[smoke_launcher] No log activity for "
+                              f"{int(idle_secs)}s — killing stuck job {job_stem}")
+                        _save_crash_log(jobs_dir, job_stem)
+                        _kill_pid(blender_pid, "Blender (stale)")
+                        proc.wait()
+                        _write_crashed_marker(jobs_dir, job_stem)
+                        sys.exit(1)
+
+        # ── Belt-and-suspenders WerFault check ──────────────────────────────
+        # If SetErrorMode didn't suppress the dialog on this machine, detect
+        # and kill WerFault so the batch doesn't hang.
         wer_pid = _find_werfault_for_pid(blender_pid)
         if wer_pid is not None:
             print(f"[smoke_launcher] WerFault PID {wer_pid} detected — killing")
@@ -186,6 +224,16 @@ def main():
 
     exit_code = proc.returncode
     if exit_code != 0:
+        # Post-exit WerFault check: the dialog can appear briefly AFTER Blender
+        # terminates.  Poll a few times so we dismiss and save the log before
+        # writing the crash marker.
+        for _attempt in range(3):
+            wer_pid = _find_werfault_for_pid(blender_pid)
+            if wer_pid is not None:
+                print(f"[smoke_launcher] Post-exit WerFault PID {wer_pid} — killing")
+                _kill_pid(wer_pid, "WerFault")
+                break
+            time.sleep(1.0)
         _save_crash_log(jobs_dir, job_stem)
         _write_crashed_marker(jobs_dir, job_stem)
         print(f"[smoke_launcher] Job {job_stem} CRASHED (exit {exit_code}) — crash log saved to jobs/")

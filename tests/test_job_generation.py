@@ -40,10 +40,12 @@ def _make_settings(**overrides):
     """
     d = dict(_BASE_VALUES)
     d.update({
-        "use_dissolve": False,
-        "slow_dissolve": False,
-        "use_noise": False,
-        "iteration_mode": "LIMITED",
+        "use_dissolve":          False,
+        "slow_dissolve":         False,
+        "iterate_dissolve_both": False,
+        "use_noise":             False,
+        "iterate_noise_both":    False,
+        "iteration_mode":        "LIMITED",
     })
     for param in _PARAM_NAMES:
         d[f"{param}_use_list"]  = False
@@ -289,3 +291,120 @@ class TestGenerateJobsAll:
             alpha_list=[_item(0.5), _item(1.5)],
         )
         assert len(list(generate_jobs_all(s))) == 12
+
+
+# ---------------------------------------------------------------------------
+# Iterate-both: dissolve on/off and noise on/off
+# ---------------------------------------------------------------------------
+
+class TestIterateDissolveBoth:
+    def test_limited_adds_off_job_when_dissolve_on(self):
+        # use_dissolve=True + iterate_dissolve_both=True → one normal job + one off job
+        s = _make_settings(
+            use_dissolve=True,
+            iterate_dissolve_both=True,
+            dissolve_speed_use_list=True,
+            dissolve_speed_list=[_item(30)],
+        )
+        jobs = list(generate_jobs_limited(s))
+        # 1 dissolve sweep job + 1 off job
+        assert len(jobs) == 2
+        on_jobs  = [j for j in jobs if j["use_dissolve"] is True]
+        off_jobs = [j for j in jobs if j["use_dissolve"] is False]
+        assert len(on_jobs)  == 1
+        assert len(off_jobs) == 1
+
+    def test_limited_no_sweep_still_adds_off_job(self):
+        # No dissolve_speed sweep configured — iterate_both still adds one off job.
+        s = _make_settings(use_dissolve=True, iterate_dissolve_both=True)
+        jobs = list(generate_jobs_limited(s))
+        off_jobs = [j for j in jobs if j["use_dissolve"] is False]
+        assert len(off_jobs) == 1
+
+    def test_limited_iterate_off_by_default(self):
+        s = _make_settings(
+            use_dissolve=True,
+            dissolve_speed_use_list=True,
+            dissolve_speed_list=[_item(30), _item(50)],
+        )
+        jobs = list(generate_jobs_limited(s))
+        # Only the 2 dissolve-on sweep jobs, no extra off job
+        assert all(j["use_dissolve"] is True for j in jobs)
+        assert len(jobs) == 2
+
+    def test_all_adds_off_pass_when_dissolve_on(self):
+        # iterate_dissolve_both doubles the Cartesian product with dissolve off.
+        s = _make_settings(
+            use_dissolve=True,
+            iterate_dissolve_both=True,
+            dissolve_speed_use_list=True,
+            dissolve_speed_list=[_item(30), _item(50)],
+        )
+        jobs = list(generate_jobs_all(s))
+        # 2 dissolve-on jobs + 1 dissolve-off job (single dissolve placeholder)
+        on_jobs  = [j for j in jobs if j["use_dissolve"] is True]
+        off_jobs = [j for j in jobs if j["use_dissolve"] is False]
+        assert len(on_jobs)  == 2
+        assert len(off_jobs) == 1
+
+    def test_all_no_extra_pass_when_flag_off(self):
+        s = _make_settings(
+            use_dissolve=True,
+            iterate_dissolve_both=False,
+            dissolve_speed_use_list=True,
+            dissolve_speed_list=[_item(30), _item(50)],
+        )
+        jobs = list(generate_jobs_all(s))
+        assert all(j["use_dissolve"] is True for j in jobs)
+        assert len(jobs) == 2
+
+    def test_all_backward_compat_dissolve_off_unchanged(self):
+        # use_dissolve=False without iterate flag → existing behavior unchanged.
+        s = _make_settings(use_dissolve=False, iterate_dissolve_both=False)
+        jobs = list(generate_jobs_all(s))
+        assert len(jobs) == 1
+        assert jobs[0]["use_dissolve"] is False
+
+
+class TestIterateNoiseBoth:
+    def test_limited_adds_off_job_when_noise_on(self):
+        s = _make_settings(
+            use_noise=True,
+            iterate_noise_both=True,
+            noise_strength_use_list=True,
+            noise_strength_list=[_item(0.5), _item(1.0)],
+        )
+        jobs = list(generate_jobs_limited(s))
+        # 2 noise-on + 1 noise-off
+        on_jobs  = [j for j in jobs if j["use_noise"] is True]
+        off_jobs = [j for j in jobs if j["use_noise"] is False]
+        assert len(on_jobs)  == 2
+        assert len(off_jobs) == 1
+
+    def test_all_adds_off_pass_when_noise_on(self):
+        s = _make_settings(
+            use_noise=True,
+            iterate_noise_both=True,
+            noise_upres_use_list=True,
+            noise_upres_list=[_item(2), _item(4)],
+        )
+        jobs = list(generate_jobs_all(s))
+        on_jobs  = [j for j in jobs if j["use_noise"] is True]
+        off_jobs = [j for j in jobs if j["use_noise"] is False]
+        assert len(on_jobs)  == 2
+        assert len(off_jobs) == 1
+
+    def test_both_flags_combine(self):
+        # iterate_dissolve_both + iterate_noise_both → 4 state combinations.
+        s = _make_settings(
+            use_dissolve=True,
+            iterate_dissolve_both=True,
+            use_noise=True,
+            iterate_noise_both=True,
+        )
+        jobs = list(generate_jobs_all(s))
+        state_pairs = {(j["use_dissolve"], j["use_noise"]) for j in jobs}
+        assert (True,  True)  in state_pairs
+        assert (True,  False) in state_pairs
+        assert (False, True)  in state_pairs
+        assert (False, False) in state_pairs

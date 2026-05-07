@@ -24,13 +24,14 @@ def _make_bpy_stub():
 
     # bpy.types — only the names referenced at module level are needed.
     btypes = types.ModuleType("bpy.types")
-    btypes.PropertyGroup   = object
-    btypes.UIList          = object
-    btypes.Operator        = object
-    btypes.Panel           = object
+    btypes.PropertyGroup    = object
+    btypes.UIList           = object
+    btypes.Operator         = object
+    btypes.Panel            = object
     btypes.AddonPreferences = object
-    btypes.Object          = object
-    btypes.Scene           = object
+    btypes.Object           = object
+    btypes.Collection       = object
+    btypes.Scene            = object
     bpy.types = btypes
 
     # bpy.app — only handlers / timers stubs needed.

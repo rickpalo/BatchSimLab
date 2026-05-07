@@ -43,7 +43,7 @@ Requires Blender 4.x (tested on 4.5.5 and 5.1.1) on Windows 10/11.  May work on 
 bl_info = {
     "name":        "SmokeSimLab",
     "author":      "SmokeSimLab",
-    "version":     (0, 1, 33),
+    "version":     (0, 1, 38),
     "blender":     (4, 0, 0),
     "location":    "View3D > Sidebar > SmokeLab",
     "description": "Batch smoke simulation parameter sweeper with CSV logging",
@@ -103,17 +103,17 @@ _STILL_SECS_DEFAULT  =  30.0   # seconds for final still frame
 # Bake estimate: bake_secs ≈ _BAKE_RATE_PER_RES3_FRAME × resolution³ × frames
 # Derived from: 0.25 s/frame baseline at resolution=64 → 0.25/(64³) ≈ 9.54e-7
 # Update _BAKE_RATE_PER_RES3_FRAME from perf_log.json once real data is available.
-_BAKE_RATE_PER_RES3_FRAME = 9.54e-7  # s / (res^3 * frame)  — placeholder
+_BAKE_RATE_PER_RES3_FRAME = 6.6247e-07  # s / (res^3 * frame)  — placeholder
 
 # Render estimate: render_secs ≈ rate × width × height × frames
 # Derived from: 15 s/frame baseline at 1920×1080 → 15/2073600 ≈ 7.23e-9
 # Update these from perf_log.json once real data is available.
 _RENDER_RATE_CYCLES_PER_PIXEL_FRAME = 7.23e-9  # s / (pixel * frame) — placeholder
-_RENDER_RATE_EEVEE_PER_PIXEL_FRAME  = 3.61e-9  # s / (pixel * frame) — placeholder (2× faster guess)
+_RENDER_RATE_EEVEE_PER_PIXEL_FRAME  = 1.0425e-6  # s / (pixel * frame) — placeholder (2× faster guess)
 
 # Legacy flat rates kept as fallback when resolution/dimensions are unknown.
-_BAKE_RATE_DEFAULT   =   0.25  # s/frame at unspecified resolution
-_RENDER_RATE_DEFAULT =  15.0   # s/frame at unspecified resolution
+_BAKE_RATE_DEFAULT   =   1.0  # s/frame at unspecified resolution
+_RENDER_RATE_DEFAULT =  45.0   # s/frame at unspecified resolution
 
 
 # ---------------------------------------------------------------------------
@@ -142,6 +142,126 @@ def make_toggle_list(name):
         if getattr(self, name + "_use_list"):
             setattr(self, name + "_use_range", False)
     return update
+
+
+def _sync_frame_defaults(self, context):
+    """Update callback for use_default_frames — copies scene range on uncheck."""
+    if not self.use_default_frames and context and context.scene:
+        self.sim_frame_start = context.scene.frame_start
+        self.sim_frame_end   = context.scene.frame_end
+
+
+# ---------------------------------------------------------------------------
+# Settings save/load — helper functions
+# ---------------------------------------------------------------------------
+
+_SWEEP_PARAMS = [
+    "resolution", "vorticity", "alpha", "beta",
+    "dissolve_speed", "noise_upres", "noise_strength", "noise_spatial_scale",
+]
+
+
+def _settings_dict(s):
+    """Return a JSON-serialisable snapshot of all Simulation Parameter settings."""
+    d = {
+        "smokesettings_version": 1,
+        "iteration_mode":        s.iteration_mode,
+        "use_dissolve":          s.use_dissolve,
+        "slow_dissolve":         s.slow_dissolve,
+        "iterate_dissolve_both": getattr(s, "iterate_dissolve_both", False),
+        "use_noise":             s.use_noise,
+        "iterate_noise_both":    getattr(s, "iterate_noise_both", False),
+        "params": {},
+    }
+    for name in _SWEEP_PARAMS:
+        d["params"][name] = {
+            "value":     getattr(s, name),
+            "use_range": getattr(s, name + "_use_range"),
+            "use_list":  getattr(s, name + "_use_list"),
+            "begin":     getattr(s, name + "_begin"),
+            "end":       getattr(s, name + "_end"),
+            "step":      getattr(s, name + "_step"),
+            "list":      [item.value for item in getattr(s, name + "_list")],
+        }
+    return d
+
+
+def _apply_settings_dict(s, data):
+    """Apply a settings snapshot dict to SmokeSettings *s*."""
+    import json
+    s.iteration_mode = data.get("iteration_mode", "LIMITED")
+    s.use_dissolve   = data.get("use_dissolve",   False)
+    s.slow_dissolve  = data.get("slow_dissolve",  False)
+    if hasattr(s, "iterate_dissolve_both"):
+        s.iterate_dissolve_both = data.get("iterate_dissolve_both", False)
+    s.use_noise      = data.get("use_noise",       False)
+    if hasattr(s, "iterate_noise_both"):
+        s.iterate_noise_both = data.get("iterate_noise_both", False)
+    params = data.get("params", {})
+    for name in _SWEEP_PARAMS:
+        if name not in params:
+            continue
+        p = params[name]
+        setattr(s, name,                 p.get("value",     getattr(s, name)))
+        setattr(s, name + "_use_range",  p.get("use_range", False))
+        setattr(s, name + "_use_list",   p.get("use_list",  False))
+        setattr(s, name + "_begin",      p.get("begin",     getattr(s, name)))
+        setattr(s, name + "_end",        p.get("end",       getattr(s, name)))
+        setattr(s, name + "_step",       p.get("step",      0))
+        lst = getattr(s, name + "_list")
+        lst.clear()
+        for val in p.get("list", []):
+            item = lst.add()
+            item.value = val
+    s.settings_snapshot = json.dumps(_settings_dict(s), sort_keys=True)
+
+
+def _load_settings_from_path(s, path):
+    """Load and apply a .smokesettings file; update tracking properties."""
+    import json, os
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        _apply_settings_dict(s, data)
+        s.settings_file_path   = path
+        s.settings_search_path = os.path.dirname(path)
+    except (OSError, json.JSONDecodeError, KeyError) as exc:
+        print(f"[SmokeSimLab] Failed to load settings from {path!r}: {exc}")
+
+
+def _is_settings_dirty(s):
+    """Return True if current settings differ from the last saved/loaded snapshot."""
+    import json
+    if not s.settings_file_path:
+        return False
+    snap = s.settings_snapshot
+    if not snap:
+        return True
+    return json.dumps(_settings_dict(s), sort_keys=True) != snap
+
+
+def _settings_files_enum_items(self, _context):
+    """EnumProperty items — list .smokesettings files in the search path."""
+    import os
+    folder = self.settings_search_path or self.output_path or ""
+    items = [('', "(none)", "No preset loaded")]
+    if folder and os.path.isdir(folder):
+        try:
+            for fname in sorted(os.listdir(folder)):
+                if fname.endswith(".smokesettings"):
+                    stem = fname[: -len(".smokesettings")]
+                    full = os.path.join(folder, fname)
+                    items.append((full, stem, full))
+        except OSError:
+            pass
+    return items
+
+
+def _on_settings_enum_update(self, _context):
+    """Update callback for settings_file_enum — auto-load on selection change."""
+    path = self.settings_file_enum
+    if path:
+        _load_settings_from_path(self, path)
 
 
 # ---------------------------------------------------------------------------
@@ -199,18 +319,23 @@ def expand_param(s, name):
 
 def _default_job(s):
     """
-    Return a job-parameter dict using only the default (base) value for
-    every parameter.  Used as the baseline in Limited Combinations mode.
+    Return a job-parameter dict using the effective default value for every
+    parameter.  Used as the baseline in Limited Combinations mode.
+
+    Uses expand_param()[0] rather than the raw base property so that a
+    single-point range (begin=128, step=0) or a single-item list is
+    honoured — the user's chosen value becomes the baseline for all other
+    parameter sweeps rather than falling back to the raw default.
     """
     return {
-        "resolution":          s.resolution,
-        "vorticity":           s.vorticity,
-        "alpha":               s.alpha,
-        "beta":                s.beta,
-        "dissolve_speed":      s.dissolve_speed,
-        "noise_upres":         s.noise_upres,
-        "noise_strength":      s.noise_strength,
-        "noise_spatial_scale": s.noise_spatial_scale,
+        "resolution":          expand_param(s, "resolution")[0],
+        "vorticity":           expand_param(s, "vorticity")[0],
+        "alpha":               expand_param(s, "alpha")[0],
+        "beta":                expand_param(s, "beta")[0],
+        "dissolve_speed":      expand_param(s, "dissolve_speed")[0],
+        "noise_upres":         expand_param(s, "noise_upres")[0],
+        "noise_strength":      expand_param(s, "noise_strength")[0],
+        "noise_spatial_scale": expand_param(s, "noise_spatial_scale")[0],
         "use_dissolve":        s.use_dissolve,
         "slow_dissolve":       s.slow_dissolve,
         "use_noise":           s.use_noise,
@@ -281,6 +406,21 @@ def generate_jobs_limited(s):
             job[param_name] = v
             yield job
 
+    # Iterate-both: append one comparison job with the feature toggled off.
+    # Only fires when the feature is currently enabled (the checkbox is hidden
+    # when the feature is off, so this path is only reached intentionally).
+    if s.use_dissolve and s.iterate_dissolve_both:
+        base = _default_job(s)
+        job  = dict(base)
+        job["use_dissolve"] = False
+        yield job
+
+    if s.use_noise and s.iterate_noise_both:
+        base = _default_job(s)
+        job  = dict(base)
+        job["use_noise"] = False
+        yield job
+
 
 def generate_jobs_all(s):
     """
@@ -289,6 +429,10 @@ def generate_jobs_all(s):
     Yields one job per element of the Cartesian product of all parameter
     ranges.  The total job count is the product of all range lengths, which
     can grow very large when multiple parameters have wide ranges.
+
+    When iterate_dissolve_both / iterate_noise_both are enabled the product
+    is extended to include jobs with that feature disabled, giving a direct
+    on-vs-off comparison within a single batch.
 
     Parameters
     ----------
@@ -301,35 +445,54 @@ def generate_jobs_all(s):
     def param(name):
         return expand_param(s, name)
 
-    res      = param("resolution")
-    vort     = param("vorticity")
-    alpha    = param("alpha")
-    beta     = param("beta")
-    dissolve = param("dissolve_speed") if s.use_dissolve else [s.dissolve_speed]
+    res   = param("resolution")
+    vort  = param("vorticity")
+    alpha = param("alpha")
+    beta  = param("beta")
 
-    if s.use_noise:
-        nu  = param("noise_upres")
-        ns  = param("noise_strength")
-        nss = param("noise_spatial_scale")
+    # Build the set of (use_dissolve, slow_dissolve, dissolve_vals) states.
+    # When iterate_dissolve_both is on, generate two passes: feature on then off.
+    if s.use_dissolve:
+        dissolve_states = [(True, s.slow_dissolve, param("dissolve_speed"))]
+        if s.iterate_dissolve_both:
+            dissolve_states.append((False, s.slow_dissolve, [s.dissolve_speed]))
     else:
-        nu  = [s.noise_upres]
-        ns  = [s.noise_strength]
-        nss = [s.noise_spatial_scale]
+        dissolve_states = [(False, s.slow_dissolve, [s.dissolve_speed])]
 
-    for combo in itertools.product(res, vort, alpha, beta, dissolve, nu, ns, nss):
-        yield {
-            "resolution":          combo[0],
-            "vorticity":           combo[1],
-            "alpha":               combo[2],
-            "beta":                combo[3],
-            "dissolve_speed":      combo[4],
-            "noise_upres":         combo[5],
-            "noise_strength":      combo[6],
-            "noise_spatial_scale": combo[7],
-            "use_dissolve":        s.use_dissolve,
-            "slow_dissolve":       s.slow_dissolve,
-            "use_noise":           s.use_noise,
-        }
+    # Build the set of (use_noise, nu, ns, nss) states.
+    if s.use_noise:
+        noise_states = [(True,
+                         param("noise_upres"),
+                         param("noise_strength"),
+                         param("noise_spatial_scale"))]
+        if s.iterate_noise_both:
+            noise_states.append((False,
+                                  [s.noise_upres],
+                                  [s.noise_strength],
+                                  [s.noise_spatial_scale]))
+    else:
+        noise_states = [(False,
+                         [s.noise_upres],
+                         [s.noise_strength],
+                         [s.noise_spatial_scale])]
+
+    for (use_d, slow_d, dissolve) in dissolve_states:
+        for (use_n, nu, ns, nss) in noise_states:
+            for combo in itertools.product(res, vort, alpha, beta,
+                                           dissolve, nu, ns, nss):
+                yield {
+                    "resolution":          combo[0],
+                    "vorticity":           combo[1],
+                    "alpha":               combo[2],
+                    "beta":                combo[3],
+                    "dissolve_speed":      combo[4],
+                    "noise_upres":         combo[5],
+                    "noise_strength":      combo[6],
+                    "noise_spatial_scale": combo[7],
+                    "use_dissolve":        use_d,
+                    "slow_dissolve":       slow_d,
+                    "use_noise":           use_n,
+                }
 
 
 def generate_jobs(s):
@@ -430,7 +593,12 @@ def export_batch(context):
     # Use the currently running Blender instance
     blender_exe = bpy.app.binary_path
     blend_file  = bpy.data.filepath
-    frame_end   = context.scene.frame_end
+    if s.use_default_frames:
+        frame_start = context.scene.frame_start
+        frame_end   = context.scene.frame_end
+    else:
+        frame_start = s.sim_frame_start
+        frame_end   = s.sim_frame_end
     python_exe  = sys.executable   # Blender's bundled Python — always on disk, no PATH needed
     jobs        = list(generate_jobs(s))
 
@@ -479,12 +647,16 @@ def export_batch(context):
             "blend_file":     blend_file,
             "output_path":    output_path,
             "domain_name":    s.domain_obj.name,
+            "frame_start":    frame_start,
             "frame_end":      frame_end,
             "render_mode":    s.render_mode,
+            "render_samples": s.render_samples,
             "render_resolution_x": context.scene.render.resolution_x,
             "render_resolution_y": context.scene.render.resolution_y,
             "use_placeholders": s.use_placeholders,
-            "use_existing_cache": s.use_existing_cache,
+            "use_existing_cache": s.use_existing_cache or s.use_placeholders,
+            "maintain_density": s.maintain_density,
+            "density_base_resolution": expand_param(s, "resolution")[0],
             "log_path":       log_path,
             "text_objects": {
                 "resolution": s.text_resolution,
@@ -521,9 +693,9 @@ def export_batch(context):
             "if errorlevel 1 (",
             "    echo   WARNING: job exited with error",
             "    set /a ERRORS+=1",
-            f'    echo error>"{done_path}"',
+            f'    echo error exit !ERRORLEVEL! {name} %DATE% %TIME%>"{done_path}"',
             ") else (",
-            f'    echo done>"{done_path}"',
+            f'    echo done {name} %DATE% %TIME%>"{done_path}"',
             ")",
             "echo.",
         ]
@@ -636,6 +808,43 @@ class SmokeSettings(bpy.types.PropertyGroup):
         default='LIMITED',
     )
 
+    # ── Simulation Parameters outer collapse ─────────────────────────────────
+
+    show_sim_params: bpy.props.BoolProperty(
+        default=True,
+        description="Expand or collapse the entire Simulation Parameters section",
+    )
+
+    # ── Frame range ───────────────────────────────────────────────────────────
+
+    use_default_frames: bpy.props.BoolProperty(
+        name="Use Default Frames",
+        default=True,
+        description="Use the .blend scene frame range; uncheck to override",
+        update=_sync_frame_defaults,
+    )
+    sim_frame_start: bpy.props.IntProperty(
+        name="Frame Start",
+        default=1, min=1,
+        description="First frame to bake and render",
+    )
+    sim_frame_end: bpy.props.IntProperty(
+        name="Frame End",
+        default=250, min=1,
+        description="Last frame to bake and render",
+    )
+
+    # ── Settings save/load ────────────────────────────────────────────────────
+
+    settings_file_path:   bpy.props.StringProperty(default="")
+    settings_search_path: bpy.props.StringProperty(default="")
+    settings_snapshot:    bpy.props.StringProperty(default="")
+    settings_file_enum:   bpy.props.EnumProperty(
+        name="Preset",
+        items=_settings_files_enum_items,
+        update=_on_settings_enum_update,
+    )
+
     # ── Resolution ───────────────────────────────────────────────────────────
 
     show_resolution: bpy.props.BoolProperty(
@@ -664,21 +873,7 @@ class SmokeSettings(bpy.types.PropertyGroup):
         description="Expand or collapse the Gas Parameters section",
     )
 
-    # Vorticity — d.vorticity — adds turbulent detail to smoke
-    vorticity:           bpy.props.FloatProperty(
-        default=1.0,
-        description="Default vorticity. Controls turbulent swirling detail. "
-                    "Blender default is 0.0; higher = more swirl",
-    )
-    vorticity_begin:     bpy.props.FloatProperty(default=1.0)
-    vorticity_end:       bpy.props.FloatProperty(default=1.0)
-    vorticity_step:      bpy.props.FloatProperty(default=0)
-    vorticity_use_range: bpy.props.BoolProperty(
-        default=False, update=make_toggle_range("vorticity"))
-    vorticity_use_list:  bpy.props.BoolProperty(
-        default=False, update=make_toggle_list("vorticity"))
-    vorticity_list:      bpy.props.CollectionProperty(type=ValueItem)
-    vorticity_index:     bpy.props.IntProperty()
+
 
     # Alpha — d.alpha — buoyancy based on smoke density
     alpha:           bpy.props.FloatProperty(
@@ -712,6 +907,22 @@ class SmokeSettings(bpy.types.PropertyGroup):
     beta_list:      bpy.props.CollectionProperty(type=ValueItem)
     beta_index:     bpy.props.IntProperty()
 
+    # Vorticity — d.vorticity — adds turbulent detail to smoke
+    vorticity:           bpy.props.FloatProperty(
+        default=1.0,
+        description="Default vorticity. Controls turbulent swirling detail. "
+                    "Blender default is 0.0; higher = more swirl",
+    )
+    vorticity_begin:     bpy.props.FloatProperty(default=1.0)
+    vorticity_end:       bpy.props.FloatProperty(default=1.0)
+    vorticity_step:      bpy.props.FloatProperty(default=0)
+    vorticity_use_range: bpy.props.BoolProperty(
+        default=False, update=make_toggle_range("vorticity"))
+    vorticity_use_list:  bpy.props.BoolProperty(
+        default=False, update=make_toggle_list("vorticity"))
+    vorticity_list:      bpy.props.CollectionProperty(type=ValueItem)
+    vorticity_index:     bpy.props.IntProperty()
+
     # ── Dissolve ─────────────────────────────────────────────────────────────
 
     show_dissolve: bpy.props.BoolProperty(
@@ -721,6 +932,15 @@ class SmokeSettings(bpy.types.PropertyGroup):
     use_dissolve: bpy.props.BoolProperty(
         default=False,
         description="Enable smoke dissolve (smoke fades out over time)",
+    )
+    iterate_dissolve_both: bpy.props.BoolProperty(
+        name="Iterate Both On and Off",
+        description=(
+            "In addition to the Dissolve-enabled jobs, also generate one job "
+            "with Dissolve disabled so you can compare with and without dissolve "
+            "in the same batch"
+        ),
+        default=False,
     )
     slow_dissolve: bpy.props.BoolProperty(
         default=False,
@@ -749,6 +969,15 @@ class SmokeSettings(bpy.types.PropertyGroup):
     use_noise: bpy.props.BoolProperty(
         default=False,
         description="Enable high-resolution noise for added smoke detail",
+    )
+    iterate_noise_both: bpy.props.BoolProperty(
+        name="Iterate Both On and Off",
+        description=(
+            "In addition to the Noise-enabled jobs, also generate one job "
+            "with Noise disabled so you can compare with and without noise "
+            "in the same batch"
+        ),
+        default=False,
     )
 
     # Noise scale — d.noise_scale — upres factor
@@ -836,23 +1065,62 @@ class SmokeSettings(bpy.types.PropertyGroup):
         default='CYCLES',
     )
 
+    render_samples: bpy.props.IntProperty(
+        name="Render Samples",
+        description=(
+            "Number of render samples for both the animation frame sequence "
+            "and the final still frame. Cycles only — EEVEE ignores this."
+        ),
+        default=16,
+        min=1,
+        max=4096,
+    )
+
+    show_setup: bpy.props.BoolProperty(
+        default=True,
+        description="Expand or collapse the Setup section",
+    )
+
+    # ── Density ───────────────────────────────────────────────────────────────
+
+    maintain_density: bpy.props.BoolProperty(
+        name="Maintain Consistent Density",
+        description=(
+            "Scale emitter fluid density proportionally to keep visual density "
+            "consistent as resolution changes. "
+            "Formula: density = base_density × (job_resolution / default_resolution)"
+        ),
+        default=False,
+    )
+
     use_placeholders: bpy.props.BoolProperty(
         name="Use Placeholders",
-        description="Skip rendering frames that already exist. Useful for resuming interrupted batch jobs",
+        description=(
+            "If a rendered frame PNG already exists it will not be re-rendered, "
+            "saving time when resuming an interrupted batch. "
+            "Enabling this also forces Use Existing Cache on"
+        ),
         default=False,
+        update=lambda self, _ctx: setattr(self, "use_existing_cache", True)
+                                  if self.use_placeholders else None,
     )
 
     use_existing_cache: bpy.props.BoolProperty(
         name="Use Existing Cache",
-        description="Skip baking if cache files already exist for this job. Useful when Blender crashes during testing",
+        description=(
+            "Skip baking frames whose cache files are already present on disk. "
+            "Automatically enabled when Use Placeholders is on. "
+            "Auto-retry always uses existing cache"
+        ),
         default=False,
     )
 
     auto_retry_failed: bpy.props.BoolProperty(
         name="Automatically Retry Failed Jobs",
         description=(
-            "When the batch finishes, automatically run Retry Failed Jobs once "
-            "if any jobs reported errors.  Does not re-retry an already-retried run"
+            "After all jobs finish, automatically re-run any that reported errors "
+            "once, with Use Existing Cache and Use Placeholders both forced on. "
+            "Does not re-retry an already-retried run"
         ),
         default=False,
     )
@@ -1037,6 +1305,72 @@ def _next_list_value(vals, default, min_val=None, max_val=None):
     return fallback
 
 
+class SMOKE_OT_save_settings(bpy.types.Operator):
+    """Save current Simulation Parameter settings to a .smokesettings file."""
+
+    bl_idname    = "smoke.save_settings"
+    bl_label     = "Save Preset"
+    bl_options   = {'REGISTER'}
+
+    filepath    = bpy.props.StringProperty(subtype='FILE_PATH')
+    filter_glob = bpy.props.StringProperty(default="*.smokesettings", options={'HIDDEN'})
+
+    def invoke(self, context, _event):
+        s = context.scene.smoke_settings
+        if s.settings_file_path:
+            self.filepath = bpy.path.abspath(s.settings_file_path)
+        else:
+            folder = bpy.path.abspath(s.output_path) if s.output_path else (s.settings_search_path or "")
+            self.filepath = (folder.rstrip("/\\") + "/") if folder else ""
+        context.window_manager.fileselect_add(self)
+        return {'RUNNING_MODAL'}
+
+    def execute(self, context):
+        import json, os
+        s    = context.scene.smoke_settings
+        path = self.filepath
+        if not path.endswith(".smokesettings"):
+            path += ".smokesettings"
+        data = _settings_dict(s)
+        try:
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump(data, fh, indent=2)
+        except OSError as exc:
+            self.report({'ERROR'}, f"Could not save: {exc}")
+            return {'CANCELLED'}
+        s.settings_file_path   = path
+        s.settings_search_path = os.path.dirname(path)
+        s.settings_snapshot    = json.dumps(data, sort_keys=True)
+        # Select the newly saved preset in the dropdown.
+        # Setting the enum value here triggers the items callback on the next
+        # draw, which will find the new file and show it selected.
+        s.settings_file_enum   = path
+        self.report({'INFO'}, f"Saved preset to {os.path.basename(path)}")
+        return {'FINISHED'}
+
+
+class SMOKE_OT_load_settings(bpy.types.Operator):
+    """Load Simulation Parameter settings from a .smokesettings file."""
+
+    bl_idname    = "smoke.load_settings"
+    bl_label     = "Load Preset"
+    bl_options   = {'REGISTER'}
+
+    filepath    = bpy.props.StringProperty(subtype='FILE_PATH')
+    filter_glob = bpy.props.StringProperty(default="*.smokesettings", options={'HIDDEN'})
+
+    def invoke(self, context, _event):
+        s = context.scene.smoke_settings
+        folder = bpy.path.abspath(s.output_path) if s.output_path else (s.settings_search_path or "")
+        self.filepath = folder
+        context.window_manager.fileselect_add(self)
+        return {'RUNNING_MODAL'}
+
+    def execute(self, context):
+        _load_settings_from_path(context.scene.smoke_settings, self.filepath)
+        return {'FINISHED'}
+
+
 class SMOKE_OT_add_value(bpy.types.Operator):
     """Add a new entry to a parameter explicit-value list."""
 
@@ -1214,6 +1548,66 @@ def _format_eta(seconds):
     return f"~{h}h {m}min remaining"
 
 
+# ---------------------------------------------------------------------------
+# Estimation log — append-only JSONL diagnostic file
+# ---------------------------------------------------------------------------
+
+_estim: dict = {
+    "output_path":         "",
+    "batch_logged":        False,
+    "job_key":             "",
+    "job_name":            "",
+    "job_start_logged":    False,
+    "est_bake_0":          0.0,    # initial model estimate saved at job_start
+    "est_render_0":        0.0,
+    "est_total_0":         0.0,
+    "bake_start_logged":   False,
+    "bake_rt_logged":      False,
+    "bake_done_logged":    False,
+    "render_start_logged": False,
+    "render_rt_logged":    False,
+    "render_done_logged":  False,
+    "still_start_logged":  False,
+    "still_done_logged":   False,
+    "job_done_logged":     False,
+}
+
+
+def _estim_log(record: dict) -> None:
+    """Append one JSON record to <output_path>/estim_log.jsonl."""
+    import json as _j
+    op = _estim["output_path"]
+    if not op:
+        return
+    record.setdefault("ts", round(time.time(), 2))
+    try:
+        with open(os.path.join(op, "estim_log.jsonl"), "a", encoding="utf-8") as fh:
+            fh.write(_j.dumps(record) + "\n")
+    except OSError:
+        pass
+
+
+def _estim_reset_job(log_key: str) -> None:
+    """Clear per-job estimation state when a new job is detected."""
+    _estim.update({
+        "job_key":             log_key,
+        "job_name":            "",
+        "job_start_logged":    False,
+        "est_bake_0":          0.0,
+        "est_render_0":        0.0,
+        "est_total_0":         0.0,
+        "bake_start_logged":   False,
+        "bake_rt_logged":      False,
+        "bake_done_logged":    False,
+        "render_start_logged": False,
+        "render_rt_logged":    False,
+        "render_done_logged":  False,
+        "still_start_logged":  False,
+        "still_done_logged":   False,
+        "job_done_logged":     False,
+    })
+
+
 def _poll_batch_progress():
     """
     Timer callback — updates overall and sub-task progress bars.
@@ -1234,6 +1628,22 @@ def _poll_batch_progress():
         done  = len(done_files)
         total = s.batch_total
 
+        # Estimation log: record batch start once per run.
+        _op = os.path.dirname(jobs_dir)
+        if not _estim["batch_logged"]:
+            _estim["output_path"]  = _op
+            _estim["batch_logged"] = True
+            _estim_log({
+                "event": "batch_start", "jobs": total,
+                "constants": {
+                    "bake_rate":      _BAKE_RATE_PER_RES3_FRAME,
+                    "render_cycles":  _RENDER_RATE_CYCLES_PER_PIXEL_FRAME,
+                    "render_eevee":   _RENDER_RATE_EEVEE_PER_PIXEL_FRAME,
+                    "setup_secs":     _SETUP_SECS_DEFAULT,
+                    "still_secs":     _STILL_SECS_DEFAULT,
+                },
+            })
+
         if done >= total:
             errors = 0
             for df in done_files:
@@ -1248,6 +1658,15 @@ def _poll_batch_progress():
             # A retry run always has at least one "_retry" in its .done filenames.
             is_retry_run = any("_retry" in f for f in done_files)
             will_auto_retry = (errors > 0 and s.auto_retry_failed and not is_retry_run)
+
+            # Estimation log: batch complete.
+            _estim_log({
+                "event":        "batch_complete",
+                "jobs":         total,
+                "errors":       errors,
+                "elapsed_secs": round(time.time() - s.batch_start_time, 1),
+            })
+            _estim["batch_logged"] = False   # allow logging for any future run
 
             err_txt = f"  ({errors} error(s))" if errors else ""
             s.batch_complete_msg   = "" if will_auto_retry else f"All {total} job(s) complete{err_txt}"
@@ -1290,6 +1709,23 @@ def _poll_batch_progress():
             # Detect job transition — accumulate elapsed time for completed job,
             # then reset per-job timer and load frame count for the new job.
             if log_file != s.batch_job_log_key:
+                # Estimation log: previous job complete (if there was one).
+                if _estim["job_key"] and not _estim["job_done_logged"] and s.batch_job_start_time > 0:
+                    _prev_elapsed = round(now - s.batch_job_start_time, 1)
+                    _estim_log({
+                        "event":        "job_complete",
+                        "job":          _estim["job_name"],
+                        "elapsed_secs": _prev_elapsed,
+                        "est_total_0":  _estim["est_total_0"],
+                        "ratio":        round(_prev_elapsed / _estim["est_total_0"], 3)
+                                        if _estim["est_total_0"] > 0 else None,
+                        "bake_actual":   round(s.batch_bake_secs_actual, 1)
+                                         if s.batch_bake_secs_actual >= 0 else None,
+                        "render_actual": round(s.batch_render_secs_actual, 1)
+                                         if s.batch_render_secs_actual >= 0 else None,
+                    })
+                _estim_reset_job(log_file)
+
                 if s.batch_job_log_key and s.batch_job_start_time > 0:
                     s.batch_jobs_elapsed += max(now - s.batch_job_start_time, 0.0)
                 s.batch_job_log_key    = log_file
@@ -1303,6 +1739,7 @@ def _poll_batch_progress():
                     s.batch_render_width  = jd.get("render_resolution_x", 0)
                     s.batch_render_height = jd.get("render_resolution_y", 0)
                     s.batch_render_mode   = jd.get("render_mode", "CYCLES")
+                    _estim["job_name"]    = jd.get("name", log_stem)
                 except (OSError, json.JSONDecodeError):
                     s.batch_frame_end     = 0
                     s.batch_resolution    = 0
@@ -1340,21 +1777,93 @@ def _poll_batch_progress():
             # Stage start time tracking (set once per job)
             if stage_label == "Baking simulation" and s.batch_bake_start_time == 0.0:
                 s.batch_bake_start_time = now
+                if not _estim["bake_start_logged"]:
+                    _estim["bake_start_logged"] = True
+                    _setup_actual = round(now - s.batch_job_start_time, 1) if s.batch_job_start_time > 0 else None
+                    _estim_log({
+                        "event":            "bake_start",
+                        "job":              _estim["job_name"],
+                        "est_bake_secs":    _estim["est_bake_0"],
+                        "setup_actual_secs": _setup_actual,
+                        "setup_est_secs":   _SETUP_SECS_DEFAULT,
+                    })
             if stage_label == "Rendering animation" and s.batch_render_start_time == 0.0:
                 s.batch_render_start_time = now
+                if not _estim["render_start_logged"]:
+                    _estim["render_start_logged"] = True
+                    _estim_log({
+                        "event":           "render_start",
+                        "job":             _estim["job_name"],
+                        "est_render_secs": _estim["est_render_0"],
+                        "bake_actual_secs": round(s.batch_bake_secs_actual, 1)
+                                           if s.batch_bake_secs_actual >= 0 else None,
+                    })
             if stage_label == "Rendering still" and s.batch_still_start_time == 0.0:
                 s.batch_still_start_time = now
+                if not _estim["still_start_logged"]:
+                    _estim["still_start_logged"] = True
+                    _estim_log({
+                        "event":          "still_start",
+                        "job":            _estim["job_name"],
+                        "est_still_secs": _STILL_SECS_DEFAULT,
+                    })
 
             # Stage completion: record actual duration once (guard with < 0)
             if s.batch_bake_secs_actual < 0:
                 if stage_label == "Using existing cache":
                     s.batch_bake_secs_actual = 0.0
+                    if not _estim["bake_done_logged"]:
+                        _estim["bake_done_logged"] = True
+                        _estim_log({
+                            "event":       "bake_actual",
+                            "job":         _estim["job_name"],
+                            "actual_secs": 0.0,
+                            "source":      "cache_skip",
+                            "default_est": _estim["est_bake_0"],
+                        })
                 elif stage_completed >= 2 and s.batch_bake_start_time > 0:
                     s.batch_bake_secs_actual = now - s.batch_bake_start_time
+                    if not _estim["bake_done_logged"]:
+                        _estim["bake_done_logged"] = True
+                        _res3 = s.batch_resolution ** 3 if s.batch_resolution > 0 else 0
+                        _implied = (s.batch_bake_secs_actual / (_res3 * frame_end)
+                                    if _res3 > 0 and frame_end > 0 else None)
+                        _estim_log({
+                            "event":         "bake_actual",
+                            "job":           _estim["job_name"],
+                            "actual_secs":   round(s.batch_bake_secs_actual, 1),
+                            "default_est":   _estim["est_bake_0"],
+                            "ratio":         round(s.batch_bake_secs_actual / _estim["est_bake_0"], 3)
+                                             if _estim["est_bake_0"] > 0 else None,
+                            "resolution":    s.batch_resolution,
+                            "frames":        frame_end,
+                            "implied_rate":  _implied,
+                            "model_rate":    _BAKE_RATE_PER_RES3_FRAME,
+                        })
             if (s.batch_render_secs_actual < 0
                     and stage_completed >= 3
                     and s.batch_render_start_time > 0):
                 s.batch_render_secs_actual = now - s.batch_render_start_time
+                if not _estim["render_done_logged"]:
+                    _estim["render_done_logged"] = True
+                    _render_px = s.batch_render_width * s.batch_render_height
+                    _implied_r = (s.batch_render_secs_actual / (_render_px * frame_end)
+                                  if _render_px > 0 and frame_end > 0 else None)
+                    _estim_log({
+                        "event":        "render_actual",
+                        "job":          _estim["job_name"],
+                        "actual_secs":  round(s.batch_render_secs_actual, 1),
+                        "default_est":  _estim["est_render_0"],
+                        "ratio":        round(s.batch_render_secs_actual / _estim["est_render_0"], 3)
+                                        if _estim["est_render_0"] > 0 else None,
+                        "render_px":    _render_px,
+                        "frames":       frame_end,
+                        "render_mode":  s.batch_render_mode,
+                        "implied_rate": _implied_r,
+                        "model_rate":   (_RENDER_RATE_EEVEE_PER_PIXEL_FRAME
+                                         if s.batch_render_mode == "EEVEE"
+                                         else _RENDER_RATE_CYCLES_PER_PIXEL_FRAME),
+                    })
 
             # How many frames does THIS run need to render?
             # Parse "Rendering animation (N frame(s))" from the log so re-render
@@ -1408,6 +1917,27 @@ def _poll_batch_progress():
                                    if render_px > 0
                                    else _RENDER_RATE_DEFAULT * frame_end)
 
+            # Estimation log: job_start (once — first poll where estimates are ready)
+            if not _estim["job_start_logged"] and _estim["job_key"] == log_file:
+                _estim["job_start_logged"] = True
+                _djs = _SETUP_SECS_DEFAULT + default_bake_secs + default_render_secs + _STILL_SECS_DEFAULT
+                _estim["est_bake_0"]   = round(default_bake_secs,   1)
+                _estim["est_render_0"] = round(default_render_secs, 1)
+                _estim["est_total_0"]  = round(_djs, 1)
+                _estim_log({
+                    "event":       "job_start",
+                    "job":         _estim["job_name"],
+                    "resolution":  s.batch_resolution,
+                    "frames":      frame_end,
+                    "render_px":   s.batch_render_width * s.batch_render_height,
+                    "render_mode": s.batch_render_mode,
+                    "est_setup":   _SETUP_SECS_DEFAULT,
+                    "est_bake":    round(default_bake_secs,   1),
+                    "est_render":  round(default_render_secs, 1),
+                    "est_still":   _STILL_SECS_DEFAULT,
+                    "est_total":   round(_djs, 1),
+                })
+
             # Setup: done once any timed stage has started or bake was skipped
             if (s.batch_bake_start_time > 0 or s.batch_bake_secs_actual >= 0
                     or s.batch_render_start_time > 0 or s.batch_still_start_time > 0):
@@ -1422,6 +1952,19 @@ def _poll_batch_progress():
                 elapsed_bake   = now - s.batch_bake_start_time
                 rate           = elapsed_bake / frames_baked
                 bake_remaining = rate * max(frame_end - frames_baked, 0)
+                if not _estim["bake_rt_logged"]:
+                    _estim["bake_rt_logged"] = True
+                    _estim_log({
+                        "event":              "bake_rt",
+                        "job":                _estim["job_name"],
+                        "frames_baked":       frames_baked,
+                        "total_frames":       frame_end,
+                        "elapsed_bake_secs":  round(elapsed_bake, 1),
+                        "rate_secs_per_frame": round(rate, 4),
+                        "est_remaining_secs": round(bake_remaining, 1),
+                        "est_total_rt_secs":  round(elapsed_bake + bake_remaining, 1),
+                        "default_est_secs":   _estim["est_bake_0"],
+                    })
             else:
                 bake_remaining = default_bake_secs
 
@@ -1435,6 +1978,19 @@ def _poll_batch_progress():
                 elapsed_render   = now - s.batch_render_start_time
                 rate             = elapsed_render / frames_rendered
                 render_remaining = rate * max(render_target - frames_rendered, 0)
+                if not _estim["render_rt_logged"]:
+                    _estim["render_rt_logged"] = True
+                    _estim_log({
+                        "event":                "render_rt",
+                        "job":                  _estim["job_name"],
+                        "frames_rendered":      frames_rendered,
+                        "total_frames":         render_target,
+                        "elapsed_render_secs":  round(elapsed_render, 1),
+                        "rate_secs_per_frame":  round(rate, 4),
+                        "est_remaining_secs":   round(render_remaining, 1),
+                        "est_total_rt_secs":    round(elapsed_render + render_remaining, 1),
+                        "default_est_secs":     _estim["est_render_0"],
+                    })
             else:
                 render_remaining = max(default_render_secs - (
                     now - s.batch_render_start_time
@@ -1443,6 +1999,32 @@ def _poll_batch_progress():
             # Still: done once stage_completed >= 4; countdown if started; else default
             if stage_completed >= 4:
                 still_remaining = 0.0
+                # Estimation log: still and job complete (once each).
+                if not _estim["still_done_logged"] and s.batch_still_start_time > 0:
+                    _estim["still_done_logged"] = True
+                    _still_actual = round(now - s.batch_still_start_time, 1)
+                    _estim_log({
+                        "event":       "still_actual",
+                        "job":         _estim["job_name"],
+                        "actual_secs": _still_actual,
+                        "est_secs":    _STILL_SECS_DEFAULT,
+                        "ratio":       round(_still_actual / _STILL_SECS_DEFAULT, 3),
+                    })
+                if not _estim["job_done_logged"]:
+                    _estim["job_done_logged"] = True
+                    _job_elapsed = round(now - s.batch_job_start_time, 1) if s.batch_job_start_time > 0 else 0.0
+                    _estim_log({
+                        "event":         "job_complete",
+                        "job":           _estim["job_name"],
+                        "elapsed_secs":  _job_elapsed,
+                        "est_total_0":   _estim["est_total_0"],
+                        "ratio":         round(_job_elapsed / _estim["est_total_0"], 3)
+                                         if _estim["est_total_0"] > 0 else None,
+                        "bake_actual":   round(s.batch_bake_secs_actual, 1)
+                                         if s.batch_bake_secs_actual >= 0 else None,
+                        "render_actual": round(s.batch_render_secs_actual, 1)
+                                         if s.batch_render_secs_actual >= 0 else None,
+                    })
             elif s.batch_still_start_time > 0:
                 still_remaining = max(
                     _STILL_SECS_DEFAULT - (now - s.batch_still_start_time), 0.0)
@@ -1461,25 +2043,33 @@ def _poll_batch_progress():
                     file=sys.stderr,
                 )
                 job_remaining = 0.0
-            if job_remaining > 0:
-                job_factor = min(elapsed_in_job / (elapsed_in_job + job_remaining), 0.99)
-            else:
-                job_factor = 0.99
-            s.batch_job_factor = job_factor
-            s.batch_job_text   = f"Job stage {stage_completed} of {_TOTAL_SUBTASKS} ({_format_eta(job_remaining)} this job)"
-
-            # --- ETA: current_job_remaining + not-started jobs × avg_per_job ---
+            # --- Bar 2: cumulative job-level progress (band-based, never backwards) ---
+            # Each stage is allocated a band proportional to its time estimate.
+            # Within a band, progress = (estimate - remaining) / estimate, clamped
+            # to [0, estimate] so slow stages stay within their band.
             default_job_secs = (
                 _SETUP_SECS_DEFAULT
                 + default_bake_secs
                 + default_render_secs
                 + _STILL_SECS_DEFAULT
             )
-            avg_completed    = (s.batch_jobs_elapsed / done
-                                if done > 0 and s.batch_jobs_elapsed > 0
-                                else default_job_secs)
+            stage_secs      = [_SETUP_SECS_DEFAULT, default_bake_secs,
+                                default_render_secs, _STILL_SECS_DEFAULT]
+            stage_remaining = [setup_remaining, bake_remaining,
+                               render_remaining, still_remaining]
+            total_est  = max(sum(stage_secs), 1.0)
+            job_factor = sum(
+                min(max(s - r, 0.0), s) / total_est
+                for s, r in zip(stage_secs, stage_remaining)
+            )
+            job_factor = min(max(job_factor, 0.0), 0.99)
+            current_stage = min(stage_completed + 1, _TOTAL_SUBTASKS)
+            s.batch_job_factor = job_factor
+            s.batch_job_text   = f"Job stage {current_stage} of {_TOTAL_SUBTASKS} ({_format_eta(job_remaining)} this job)"
+
+            # --- ETA: current_job_remaining + not-started jobs × model estimate ---
             jobs_not_started = max(total - done - 1, 0)
-            remaining        = job_remaining + jobs_not_started * avg_completed
+            remaining        = job_remaining + jobs_not_started * default_job_secs
             s.batch_time_remaining = f"All jobs: {_format_eta(remaining)}"
 
         else:
@@ -1955,6 +2545,20 @@ def _sub_param_ui(box, s, name, label):
         col.operator("smoke.remove_value", text="", icon='REMOVE').param = name
 
 
+def _settings_ui(layout, s):
+    """Draw the preset save/load row at the top of Simulation Parameters."""
+    import os
+    row = layout.row(align=True)
+    row.prop(s, "settings_file_enum", text="")
+    if _is_settings_dirty(s):
+        row.label(text="*")
+    row.operator("smoke.save_settings", text="", icon='FILE_TICK')
+    row.operator("smoke.load_settings", text="", icon='FILE_FOLDER')
+    if s.settings_file_path:
+        stem = os.path.splitext(os.path.basename(s.settings_file_path))[0]
+        layout.label(text=f"Loaded: {stem}", icon='CHECKMARK')
+
+
 def _standalone_param_ui(layout, s, name, label,
                          show_prop, enable_prop=None, extra_props=None):
     """
@@ -1983,9 +2587,9 @@ def _standalone_param_ui(layout, s, name, label,
     row.label(text=label)
 
     if not getattr(s, show_prop):
-        return
+        return box
     if enable_prop and not getattr(s, enable_prop):
-        return
+        return box
 
     if extra_props:
         for prop_name, prop_label in extra_props:
@@ -2008,6 +2612,7 @@ def _standalone_param_ui(layout, s, name, label,
         col = row.column(align=True)
         col.operator("smoke.add_value",    text="", icon='ADD').param    = name
         col.operator("smoke.remove_value", text="", icon='REMOVE').param = name
+    return box
 
 
 def _gas_ui(layout, s):
@@ -2050,6 +2655,7 @@ def _noise_ui(layout, s):
     if not s.show_noise or not s.use_noise:
         return
 
+    box.prop(s, "iterate_noise_both", text="Iterate Both On and Off")
     _sub_param_ui(box, s, "noise_upres",         "Scale")
     _sub_param_ui(box, s, "noise_strength",      "Strength")
     _sub_param_ui(box, s, "noise_spatial_scale", "Position Scale")
@@ -2099,41 +2705,73 @@ class SMOKE_PT_panel(bpy.types.Panel):
         version = ".".join(str(v) for v in bl_info["version"])
         layout.label(text=f"SmokeSimLab v{version}", icon='TOOL_SETTINGS')
 
-        # ── Domain and output ─────────────────────────────────────────────
-        layout.prop(s, "domain_obj", text="Domain Object")
-        layout.prop(s, "output_path")
-
-        layout.separator()
-
-        # ── Parameter sections ────────────────────────────────────────────
-        _standalone_param_ui(layout, s, "resolution", "Resolution",
-                             show_prop="show_resolution")
-        layout.separator()
-
-        _gas_ui(layout, s)
-        layout.separator()
-
-        _standalone_param_ui(layout, s, "dissolve_speed", "Dissolve",
-                             show_prop="show_dissolve",
-                             enable_prop="use_dissolve",
-                             extra_props=[("slow_dissolve", "Slow Dissolve")])
-        layout.separator()
-
-        _noise_ui(layout, s)
-        layout.separator()
-
-        # ── Text Objects ──────────────────────────────────────────────────
-        box = layout.box()
-        row = box.row()
-        row.prop(s, "show_text_objects",
-                 icon='TRIA_DOWN' if s.show_text_objects else 'TRIA_RIGHT',
+        # ── Setup (collapsible) ───────────────────────────────────────────
+        box_setup = layout.box()
+        row = box_setup.row()
+        row.prop(s, "show_setup",
+                 icon='TRIA_DOWN' if s.show_setup else 'TRIA_RIGHT',
                  emboss=False, text="")
-        row.label(text="Text Objects")
-        if s.show_text_objects:
-            box.prop(s, "text_resolution", text="Resolution")
-            box.prop(s, "text_noise",      text="Noise")
-            box.prop(s, "text_dissolve",   text="Dissolve")
-            box.prop(s, "text_time",       text="Bake Time")
+        row.label(text="Setup")
+        if s.show_setup:
+            box_setup.prop(s, "domain_obj", text="Domain Object")
+            # Text Objects (moved inside Setup)
+            box_to = box_setup.box()
+            row_to = box_to.row()
+            row_to.prop(s, "show_text_objects",
+                        icon='TRIA_DOWN' if s.show_text_objects else 'TRIA_RIGHT',
+                        emboss=False, text="")
+            row_to.label(text="Text Objects")
+            if s.show_text_objects:
+                box_to.prop(s, "text_resolution", text="Resolution")
+                box_to.prop(s, "text_noise",      text="Noise")
+                box_to.prop(s, "text_dissolve",   text="Dissolve")
+                box_to.prop(s, "text_time",       text="Bake Time")
+            box_setup.prop(s, "output_path")
+
+        layout.separator()
+
+        # ── Simulation Parameters (outer collapsible) ─────────────────────
+        box_sim = layout.box()
+        row = box_sim.row()
+        row.prop(s, "show_sim_params",
+                 icon='TRIA_DOWN' if s.show_sim_params else 'TRIA_RIGHT',
+                 emboss=False, text="")
+        row.label(text="Simulation Parameters")
+
+        if s.show_sim_params:
+            # ── Settings save/load ────────────────────────────────────────
+            _settings_ui(box_sim, s)
+            box_sim.separator()
+
+            # ── Frame range ───────────────────────────────────────────────
+            fr_box = box_sim.box()
+            fr_row = fr_box.row()
+            fr_row.prop(s, "use_default_frames", text="Use Default Frames")
+            sub = fr_box.column()
+            sub.enabled = not s.use_default_frames
+            sub.prop(s, "sim_frame_start", text="Frame Start")
+            sub.prop(s, "sim_frame_end",   text="Frame End")
+            box_sim.separator()
+
+            res_box = _standalone_param_ui(box_sim, s, "resolution", "Resolution",
+                                          show_prop="show_resolution")
+            if s.show_resolution:
+                res_box.prop(s, "maintain_density")
+            box_sim.separator()
+
+            _gas_ui(box_sim, s)
+            box_sim.separator()
+
+            _standalone_param_ui(box_sim, s, "dissolve_speed", "Dissolve",
+                                 show_prop="show_dissolve",
+                                 enable_prop="use_dissolve",
+                                 extra_props=[
+                                     ("iterate_dissolve_both", "Iterate Both On and Off"),
+                                     ("slow_dissolve", "Slow Dissolve"),
+                                 ])
+            box_sim.separator()
+
+            _noise_ui(box_sim, s)
 
         layout.separator()
 
@@ -2141,16 +2779,22 @@ class SMOKE_PT_panel(bpy.types.Panel):
         job_count = sum(1 for _ in generate_jobs(s))
         box  = layout.box()
         box.label(text="Iteration Mode:")
-        box.prop(s, "iteration_mode", expand=True)   # radio buttons
+        box.prop(s, "iteration_mode", expand=True)
         box.label(text=f"{job_count} job(s) will be created")
 
         layout.separator()
 
         # ── Render settings ──────────────────────────────────────────────────
-        layout.prop(s, "use_placeholders", text="Use Placeholders")
-        layout.prop(s, "use_existing_cache", text="Use Existing Cache")
-        layout.prop(s, "auto_retry_failed", text="Automatically Retry Failed Jobs")
-        layout.prop(s, "render_mode", text="Render Engine")
+        layout.prop(s, "use_placeholders",   text="Use Placeholders")
+        row_cache = layout.row()
+        row_cache.separator(factor=2.0)
+        sub_cache = row_cache.column()
+        sub_cache.enabled = not s.use_placeholders
+        sub_cache.prop(s, "use_existing_cache", text="Use Existing Cache")
+        layout.prop(s, "auto_retry_failed",  text="Automatically Retry Failed Jobs")
+        row = layout.row()
+        row.prop(s, "render_mode",    text="Render Engine")
+        row.prop(s, "render_samples", text="Samples")
         layout.operator(
             "smoke.export_batch",
             text=f"Export Batch  ({job_count} jobs)",
@@ -2260,6 +2904,19 @@ def _reset_on_load(dummy=None):
         s.noise_spatial_scale_begin = 1.0
         s.noise_spatial_scale_end   = 1.0
 
+        s.use_default_frames = True
+        s.sim_frame_start    = 1
+        s.sim_frame_end      = 250
+
+        s.settings_file_path   = ""
+        s.settings_search_path = ""
+        s.settings_snapshot    = ""
+        s.render_samples       = 16
+        s.maintain_density     = False
+
+        s.iterate_dissolve_both = False
+        s.iterate_noise_both    = False
+
         s.iteration_mode     = 'LIMITED'
         s.use_placeholders   = False
         s.use_existing_cache = False
@@ -2304,6 +2961,8 @@ classes = [
     SmokeSimLabPreferences,
     SMOKE_OT_export_batch,
     SMOKE_OT_run_batch,
+    SMOKE_OT_save_settings,
+    SMOKE_OT_load_settings,
     SMOKE_OT_add_value,
     SMOKE_OT_remove_value,
     SMOKE_OT_open_docs,
