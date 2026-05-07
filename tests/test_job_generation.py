@@ -18,13 +18,13 @@ _PARAM_NAMES = [
 
 _BASE_VALUES = {
     "resolution": 64,
-    "vorticity": 1.0,
+    "vorticity": 0.0,
     "alpha": 1.0,
     "beta": 1.0,
-    "dissolve_speed": 50,
+    "dissolve_speed": 5,
     "noise_upres": 2,
-    "noise_strength": 1.0,
-    "noise_spatial_scale": 1.0,
+    "noise_strength": 2.0,
+    "noise_spatial_scale": 2.0,
 }
 
 
@@ -171,7 +171,7 @@ class TestGenerateJobsLimited:
             resolution_list=[_item(64), _item(128)],
         )
         for job in generate_jobs_limited(s):
-            assert job["vorticity"] == pytest.approx(1.0)
+            assert job["vorticity"] == pytest.approx(0.0)
 
     def test_dissolve_ignored_when_disabled(self):
         s = _make_settings(

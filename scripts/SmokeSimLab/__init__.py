@@ -42,8 +42,8 @@ Requires Blender 4.x (tested on 4.5.5 and 5.1.1) on Windows 10/11.  May work on 
 # ---------------------------------------------------------------------------
 bl_info = {
     "name":        "SmokeSimLab",
-    "author":      "SmokeSimLab",
-    "version":     (0, 1, 38),
+    "author":      "Rick Palo",
+    "version":     (0, 1, 39),
     "blender":     (4, 0, 0),
     "location":    "View3D > Sidebar > SmokeLab",
     "description": "Batch smoke simulation parameter sweeper with CSV logging",
@@ -657,6 +657,8 @@ def export_batch(context):
             "use_existing_cache": s.use_existing_cache or s.use_placeholders,
             "maintain_density": s.maintain_density,
             "density_base_resolution": expand_param(s, "resolution")[0],
+            "collect_crash_logs":      s.collect_crash_logs,
+            "collect_estimation_data": s.collect_estimation_data,
             "log_path":       log_path,
             "text_objects": {
                 "resolution": s.text_resolution,
@@ -909,12 +911,12 @@ class SmokeSettings(bpy.types.PropertyGroup):
 
     # Vorticity — d.vorticity — adds turbulent detail to smoke
     vorticity:           bpy.props.FloatProperty(
-        default=1.0,
+        default=0.0,
         description="Default vorticity. Controls turbulent swirling detail. "
                     "Blender default is 0.0; higher = more swirl",
     )
-    vorticity_begin:     bpy.props.FloatProperty(default=1.0)
-    vorticity_end:       bpy.props.FloatProperty(default=1.0)
+    vorticity_begin:     bpy.props.FloatProperty(default=0.0)
+    vorticity_end:       bpy.props.FloatProperty(default=0.0)
     vorticity_step:      bpy.props.FloatProperty(default=0)
     vorticity_use_range: bpy.props.BoolProperty(
         default=False, update=make_toggle_range("vorticity"))
@@ -947,11 +949,11 @@ class SmokeSettings(bpy.types.PropertyGroup):
         description="Use logarithmic (slow) dissolve instead of linear",
     )
     dissolve_speed: bpy.props.IntProperty(
-        default=50,
+        default=5,
         description="Default dissolve speed in frames. Blender default is 5",
     )
-    dissolve_speed_begin:     bpy.props.IntProperty(default=50)
-    dissolve_speed_end:       bpy.props.IntProperty(default=50)
+    dissolve_speed_begin:     bpy.props.IntProperty(default=5)
+    dissolve_speed_end:       bpy.props.IntProperty(default=5)
     dissolve_speed_step:      bpy.props.IntProperty(default=0)
     dissolve_speed_use_range: bpy.props.BoolProperty(
         default=False, update=make_toggle_range("dissolve_speed"))
@@ -997,11 +999,11 @@ class SmokeSettings(bpy.types.PropertyGroup):
 
     # Noise strength — d.noise_strength
     noise_strength: bpy.props.FloatProperty(
-        default=1.0,
+        default=2.0,
         description="Default noise strength. Blender default is 1.0",
     )
-    noise_strength_begin:     bpy.props.FloatProperty(default=1.0)
-    noise_strength_end:       bpy.props.FloatProperty(default=1.0)
+    noise_strength_begin:     bpy.props.FloatProperty(default=2.0)
+    noise_strength_end:       bpy.props.FloatProperty(default=2.0)
     noise_strength_step:      bpy.props.FloatProperty(default=0)
     noise_strength_use_range: bpy.props.BoolProperty(
         default=False, update=make_toggle_range("noise_strength"))
@@ -1012,11 +1014,11 @@ class SmokeSettings(bpy.types.PropertyGroup):
 
     # Noise position scale — d.noise_pos_scale
     noise_spatial_scale: bpy.props.FloatProperty(
-        default=1.0,
+        default=2.0,
         description="Default noise position scale. Blender default is 1.0",
     )
-    noise_spatial_scale_begin:     bpy.props.FloatProperty(default=1.0)
-    noise_spatial_scale_end:       bpy.props.FloatProperty(default=1.0)
+    noise_spatial_scale_begin:     bpy.props.FloatProperty(default=2.0)
+    noise_spatial_scale_end:       bpy.props.FloatProperty(default=2.0)
     noise_spatial_scale_step:      bpy.props.FloatProperty(default=0)
     noise_spatial_scale_use_range: bpy.props.BoolProperty(
         default=False, update=make_toggle_range("noise_spatial_scale"))
@@ -1121,6 +1123,29 @@ class SmokeSettings(bpy.types.PropertyGroup):
             "After all jobs finish, automatically re-run any that reported errors "
             "once, with Use Existing Cache and Use Placeholders both forced on. "
             "Does not re-retry an already-retried run"
+        ),
+        default=False,
+    )
+
+    # ── Utilities ─────────────────────────────────────────────────────────────
+
+    show_utilities: bpy.props.BoolProperty(
+        default=False,
+        description="Expand or collapse the Utilities section",
+    )
+    collect_crash_logs: bpy.props.BoolProperty(
+        name="Collect Crash Logs",
+        description=(
+            "Append each Blender crash log to crash_log.txt in the output folder. "
+            "When unchecked, crash detection still stops the job but no log is written"
+        ),
+        default=False,
+    )
+    collect_estimation_data: bpy.props.BoolProperty(
+        name="Collect Estimation Data",
+        description=(
+            "Write estim_log.jsonl (timing estimates vs actuals) and perf_log.json "
+            "(per-job bake/render rates). Disable when not actively calibrating estimates"
         ),
         default=False,
     )
@@ -1629,9 +1654,12 @@ def _poll_batch_progress():
         total = s.batch_total
 
         # Estimation log: record batch start once per run.
+        # Output path is only set when collect_estimation_data is on; _estim_log
+        # is a no-op when output_path is empty, so all logging is suppressed.
         _op = os.path.dirname(jobs_dir)
         if not _estim["batch_logged"]:
-            _estim["output_path"]  = _op
+            if s.collect_estimation_data:
+                _estim["output_path"] = _op
             _estim["batch_logged"] = True
             _estim_log({
                 "event": "batch_start", "jobs": total,
@@ -2846,6 +2874,19 @@ class SMOKE_PT_panel(bpy.types.Panel):
             if s.batch_time_remaining:
                 layout.label(text=s.batch_time_remaining, icon='TIME')
 
+        layout.separator()
+
+        # ── Utilities (collapsible, default collapsed) ────────────────────
+        box_util = layout.box()
+        row = box_util.row()
+        row.prop(s, "show_utilities",
+                 icon='TRIA_DOWN' if s.show_utilities else 'TRIA_RIGHT',
+                 emboss=False, text="")
+        row.label(text="Utilities")
+        if s.show_utilities:
+            box_util.prop(s, "collect_crash_logs")
+            box_util.prop(s, "collect_estimation_data")
+
 
 # ---------------------------------------------------------------------------
 # File-load reset
@@ -2883,8 +2924,8 @@ def _reset_on_load(dummy=None):
         s.resolution_begin         = 64
         s.resolution_end           = 64
         s.vorticity_step           = 0.0
-        s.vorticity_begin          = 1.0
-        s.vorticity_end            = 1.0
+        s.vorticity_begin          = 0.0
+        s.vorticity_end            = 0.0
         s.alpha_step               = 0.0
         s.alpha_begin              = 1.0
         s.alpha_end                = 1.0
@@ -2892,17 +2933,17 @@ def _reset_on_load(dummy=None):
         s.beta_begin               = 1.0
         s.beta_end                 = 1.0
         s.dissolve_speed_step      = 0
-        s.dissolve_speed_begin     = 50
-        s.dissolve_speed_end       = 50
+        s.dissolve_speed_begin     = 5
+        s.dissolve_speed_end       = 5
         s.noise_upres_step         = 0
         s.noise_upres_begin        = 2
         s.noise_upres_end          = 2
         s.noise_strength_step      = 0.0
-        s.noise_strength_begin     = 1.0
-        s.noise_strength_end       = 1.0
+        s.noise_strength_begin     = 2.0
+        s.noise_strength_end       = 2.0
         s.noise_spatial_scale_step  = 0.0
-        s.noise_spatial_scale_begin = 1.0
-        s.noise_spatial_scale_end   = 1.0
+        s.noise_spatial_scale_begin = 2.0
+        s.noise_spatial_scale_end   = 2.0
 
         s.use_default_frames = True
         s.sim_frame_start    = 1

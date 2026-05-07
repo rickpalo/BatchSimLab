@@ -88,3 +88,27 @@ Inside the expanded section, two checkboxes (both default `False`):
 **Files to change:** `scripts/SmokeSimLab/__init__.py` (properties + panel draw
 + polling gate), `scripts/SmokeSimLab/smoke_launcher.py` (crash log gate),
 `scripts/SmokeSimLab/smoke_worker.py` (perf_log gate).
+
+---
+
+## TODO-4: Update default parameter values
+
+Change the `default=` values on the following `SmokeSettings` properties in
+`scripts/SmokeSimLab/__init__.py`:
+
+| Property | New default |
+|---|---|
+| `resolution` | `64` |
+| `buoyancy_density` | `1.0` |
+| `heat` | `1.0` |
+| `vorticity` | `0.0` |
+| `dissolve_speed` (or equivalent dissolve frames property) | `5` |
+| `upres` | `2` |
+| `noise_strength` | `2.0` |
+| `noise_scale` | `2.0` |
+
+**Note:** Verify the exact property names against `SmokeSettings` in `__init__.py`
+before changing — the table above uses likely names, not confirmed names.
+
+**Files to change:** `scripts/SmokeSimLab/__init__.py` (`SmokeSettings` property
+declarations).

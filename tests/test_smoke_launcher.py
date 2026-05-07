@@ -15,13 +15,12 @@ from smoke_launcher import _find_werfault_for_pid, _save_crash_log, _write_crash
 # ---------------------------------------------------------------------------
 
 class TestSaveCrashLog:
-    def test_copies_crash_file(self, tmp_path, monkeypatch):
-        """Crash log is copied with a timestamped name."""
+    def test_appends_to_crash_log_txt(self, tmp_path, monkeypatch):
+        """Crash content is appended to output_path/crash_log.txt, not jobs/."""
         fake_temp = tmp_path / "TEMP"
         fake_temp.mkdir()
         crash_src = fake_temp / "blender.crash.txt"
         crash_src.write_text("Stack trace line 1\nStack trace line 2\n")
-
         monkeypatch.setenv("TEMP", str(fake_temp))
 
         jobs_dir = tmp_path / "jobs"
@@ -29,12 +28,17 @@ class TestSaveCrashLog:
 
         _save_crash_log(str(jobs_dir), "job_0000")
 
-        crash_files = list(jobs_dir.glob("job_0000_crash_*.txt"))
-        assert len(crash_files) == 1
-        assert crash_files[0].read_text() == "Stack trace line 1\nStack trace line 2\n"
+        # Written to output_path (parent of jobs/), not inside jobs/
+        crash_log = tmp_path / "crash_log.txt"
+        assert crash_log.exists()
+        content = crash_log.read_text()
+        assert "Stack trace line 1" in content
+        assert "job_0000" in content
+        # Nothing written inside the jobs dir
+        assert list(jobs_dir.glob("*.txt")) == []
 
-    def test_filename_contains_timestamp(self, tmp_path, monkeypatch):
-        """Saved filename contains a YYYYMMDD_HHMMSS timestamp."""
+    def test_header_contains_timestamp_and_job_stem(self, tmp_path, monkeypatch):
+        """Each entry begins with a dated header containing the job stem."""
         fake_temp = tmp_path / "TEMP"
         fake_temp.mkdir()
         (fake_temp / "blender.crash.txt").write_text("crash")
@@ -43,15 +47,15 @@ class TestSaveCrashLog:
         jobs_dir = tmp_path / "jobs"
         jobs_dir.mkdir()
 
-        before = datetime.datetime.now().strftime("%Y%m%d")
+        before = datetime.datetime.now().strftime("%Y-%m-%d")
         _save_crash_log(str(jobs_dir), "job_0001")
 
-        crash_files = list(jobs_dir.glob("job_0001_crash_*.txt"))
-        assert len(crash_files) == 1
-        assert before in crash_files[0].name
+        content = (tmp_path / "crash_log.txt").read_text()
+        assert before in content
+        assert "job_0001" in content
 
-    def test_no_crash_file_does_not_raise(self, tmp_path, monkeypatch):
-        """If blender.crash.txt does not exist the function returns silently."""
+    def test_no_crash_file_writes_placeholder(self, tmp_path, monkeypatch):
+        """If blender.crash.txt is missing, a placeholder line is written."""
         fake_temp = tmp_path / "TEMP"
         fake_temp.mkdir()
         monkeypatch.setenv("TEMP", str(fake_temp))
@@ -59,11 +63,13 @@ class TestSaveCrashLog:
         jobs_dir = tmp_path / "jobs"
         jobs_dir.mkdir()
 
-        _save_crash_log(str(jobs_dir), "job_0002")  # must not raise
-        assert list(jobs_dir.glob("*.txt")) == []
+        _save_crash_log(str(jobs_dir), "job_0002")
+        content = (tmp_path / "crash_log.txt").read_text()
+        assert "job_0002" in content
+        assert "no blender.crash.txt" in content
 
-    def test_multiple_crashes_produce_separate_files(self, tmp_path, monkeypatch):
-        """Each call produces a uniquely-named file (different timestamps)."""
+    def test_multiple_crashes_accumulate_in_one_file(self, tmp_path, monkeypatch):
+        """Successive calls append to the same crash_log.txt with separate headers."""
         fake_temp = tmp_path / "TEMP"
         fake_temp.mkdir()
         crash_src = fake_temp / "blender.crash.txt"
@@ -73,16 +79,15 @@ class TestSaveCrashLog:
         jobs_dir = tmp_path / "jobs"
         jobs_dir.mkdir()
 
-        import time as _time
         _save_crash_log(str(jobs_dir), "job_0000")
-        _time.sleep(1.1)  # ensure different second → different filename
         crash_src.write_text("crash B")
-        _save_crash_log(str(jobs_dir), "job_0000")
+        _save_crash_log(str(jobs_dir), "job_0001")
 
-        crash_files = sorted(jobs_dir.glob("job_0000_crash_*.txt"))
-        assert len(crash_files) == 2
-        assert crash_files[0].read_text() == "crash A"
-        assert crash_files[1].read_text() == "crash B"
+        content = (tmp_path / "crash_log.txt").read_text()
+        assert "crash A" in content
+        assert "crash B" in content
+        assert "job_0000" in content
+        assert "job_0001" in content
 
 
 # ---------------------------------------------------------------------------

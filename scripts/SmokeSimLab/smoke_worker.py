@@ -269,8 +269,9 @@ use_placeholders   = cfg.get("use_placeholders", False)
 use_existing_cache = cfg.get("use_existing_cache", False)
 
 # Density scaling — applied before baking when maintain_density is True
-maintain_density        = cfg.get("maintain_density", False)
-density_base_resolution = cfg.get("density_base_resolution", int(p.get("resolution", 64)))
+maintain_density         = cfg.get("maintain_density", False)
+density_base_resolution  = cfg.get("density_base_resolution", int(p.get("resolution", 64)))
+collect_estimation_data  = cfg.get("collect_estimation_data", False)
 
 render_dir = os.path.join(output_path, "Renders")
 cache_dir  = os.path.join(output_path, "Cache", name)
@@ -415,11 +416,17 @@ _time.sleep(2.0)
 #   2. Partial cache (some frames, not all) → resume bake without freeing
 #   3. No cache (or ignoring existing)     → free + fresh bake
 baked_frames = set()
+_all_cache_files = []
 for _root, _dirs, files in os.walk(effective_cache_dir):
     for f in files:
-        m = re.search(r'_(\d{4})\.(vdb|uni)$', f)
+        _all_cache_files.append(f)
+        m = re.search(r'_(\d+)\.(vdb|uni)$', f)
         if m:
             baked_frames.add(int(m.group(1)))
+
+if not baked_frames and _all_cache_files:
+    _log(f"[{name}] WARNING: cache dir has {len(_all_cache_files)} file(s) but none matched "
+         f"frame-number pattern — first few: {_all_cache_files[:5]}")
 
 bake_complete = all(f in baked_frames for f in range(frame_start, frame_end + 1))
 
@@ -684,8 +691,9 @@ _perf = {
     "render_secs_per_frame":   round(render_seconds / frames_actually_rendered, 6) if frames_actually_rendered > 0 else None,
     "render_secs_per_pixel_frame": round(render_seconds / (_pixels * frames_actually_rendered), 12) if frames_actually_rendered > 0 and _pixels > 0 else None,
 }
-_append_perf_record(output_path, _perf)
-_log(f"[{name}] Performance record written to perf_log.json")
+if collect_estimation_data:
+    _append_perf_record(output_path, _perf)
+    _log(f"[{name}] Performance record written to perf_log.json")
 
 # ---------------------------------------------------------------------------
 # Exit

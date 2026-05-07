@@ -31,7 +31,6 @@ No third-party dependencies — stdlib + tasklist.exe (built into Windows).
 import datetime
 import json
 import os
-import shutil
 import subprocess
 import sys
 import time
@@ -96,20 +95,33 @@ def _write_crashed_marker(jobs_dir, job_stem):
 
 
 def _save_crash_log(jobs_dir, job_stem):
-    """Copy blender.crash.txt from %TEMP% to the jobs directory."""
-    crash_src = os.path.join(
+    """Append blender.crash.txt to <output_path>/crash_log.txt with a dated header.
+
+    The file survives re-exports because it lives in output_path, not jobs/.
+    Each crash appends a timestamped header block so multiple crashes accumulate
+    in one place without overwriting each other.
+    """
+    crash_src   = os.path.join(
         os.environ.get("TEMP", r"C:\Windows\Temp"), "blender.crash.txt"
     )
-    if not os.path.exists(crash_src):
-        print("[smoke_launcher] No blender.crash.txt found in %TEMP%")
-        return
-    ts   = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    dest = os.path.join(jobs_dir, f"{job_stem}_crash_{ts}.txt")
+    output_path = os.path.dirname(jobs_dir)   # jobs_dir = <output_path>/jobs/
+    dest        = os.path.join(output_path, "crash_log.txt")
+    ts          = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
     try:
-        shutil.copy2(crash_src, dest)
-        print(f"[smoke_launcher] Crash log saved → {dest}")
+        with open(dest, "a", encoding="utf-8") as fh:
+            fh.write(f"\n=== {ts}  {job_stem} ===\n")
+            if os.path.exists(crash_src):
+                try:
+                    with open(crash_src, "r", encoding="utf-8", errors="replace") as cf:
+                        fh.write(cf.read())
+                except OSError:
+                    fh.write("[could not read blender.crash.txt]\n")
+            else:
+                fh.write("[no blender.crash.txt found in %TEMP%]\n")
+        print(f"[smoke_launcher] Crash log appended → {dest}")
     except OSError as exc:
-        print(f"[smoke_launcher] Warning: could not copy crash log: {exc}")
+        print(f"[smoke_launcher] Warning: could not write crash log: {exc}")
 
 
 # ---------------------------------------------------------------------------
@@ -127,10 +139,11 @@ def main():
     with open(job_json, encoding="utf-8") as fh:
         job_data = json.load(fh)
 
-    blend_file  = job_data.get("blend_file", "")
-    render_mode = job_data.get("render_mode", "CYCLES")
-    output_path = job_data.get("output_path", "")
-    log_path    = job_data.get("log_path", "")
+    blend_file         = job_data.get("blend_file", "")
+    render_mode        = job_data.get("render_mode", "CYCLES")
+    output_path        = job_data.get("output_path", "")
+    log_path           = job_data.get("log_path", "")
+    collect_crash_logs = job_data.get("collect_crash_logs", False)
 
     # smoke_worker.py is exported to output_path alongside run_smoke_batch.bat
     worker_py = os.path.join(output_path, "smoke_worker.py")
@@ -200,7 +213,8 @@ def main():
                     if idle_secs >= _STALE_LOG_TIMEOUT:
                         print(f"[smoke_launcher] No log activity for "
                               f"{int(idle_secs)}s — killing stuck job {job_stem}")
-                        _save_crash_log(jobs_dir, job_stem)
+                        if collect_crash_logs:
+                            _save_crash_log(jobs_dir, job_stem)
                         _kill_pid(blender_pid, "Blender (stale)")
                         proc.wait()
                         _write_crashed_marker(jobs_dir, job_stem)
@@ -212,12 +226,13 @@ def main():
         wer_pid = _find_werfault_for_pid(blender_pid)
         if wer_pid is not None:
             print(f"[smoke_launcher] WerFault PID {wer_pid} detected — killing")
-            _save_crash_log(jobs_dir, job_stem)
+            if collect_crash_logs:
+                _save_crash_log(jobs_dir, job_stem)
             _kill_pid(wer_pid, "WerFault")
             _kill_pid(blender_pid, "Blender")
             proc.wait()
             _write_crashed_marker(jobs_dir, job_stem)
-            print(f"[smoke_launcher] Job {job_stem} CRASHED — crash log saved to jobs/")
+            print(f"[smoke_launcher] Job {job_stem} CRASHED")
             sys.exit(1)
 
         time.sleep(_POLL_INTERVAL)
@@ -234,9 +249,10 @@ def main():
                 _kill_pid(wer_pid, "WerFault")
                 break
             time.sleep(1.0)
-        _save_crash_log(jobs_dir, job_stem)
+        if collect_crash_logs:
+            _save_crash_log(jobs_dir, job_stem)
         _write_crashed_marker(jobs_dir, job_stem)
-        print(f"[smoke_launcher] Job {job_stem} CRASHED (exit {exit_code}) — crash log saved to jobs/")
+        print(f"[smoke_launcher] Job {job_stem} CRASHED (exit {exit_code})")
         sys.exit(1)
 
     print(f"[smoke_launcher] Job {job_stem} OK")
