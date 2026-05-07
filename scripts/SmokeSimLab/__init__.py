@@ -43,7 +43,7 @@ Requires Blender 4.x (tested on 4.5.5 and 5.1.1) on Windows 10/11.  May work on 
 bl_info = {
     "name":        "SmokeSimLab",
     "author":      "Rick Palo",
-    "version":     (0, 1, 42),
+    "version":     (0, 1, 44),
     "blender":     (4, 0, 0),
     "location":    "View3D > Sidebar > SmokeLab",
     "description": "Batch smoke simulation parameter sweeper with CSV logging",
@@ -243,31 +243,46 @@ def _is_settings_dirty(s):
 
 
 def _settings_files_enum_items(self, _context):
-    """EnumProperty items — list .smokesettings files in the search path."""
+    """EnumProperty items — list .smokesettings files in the preset search path.
+
+    The identifier for each item is the filename stem (no extension, no path).
+    This avoids issues with spaces, backslashes, or long Windows paths being
+    used as Blender EnumProperty identifiers.
+    """
     import os
-    folder = self.settings_search_path or self.output_path or ""
-    # output_path may be a Blender-relative path (e.g. "//AutoTest"); resolve
-    # it to an absolute OS path before calling os.path.isdir.
-    if folder:
-        folder = bpy.path.abspath(folder)
-    items = [('', "(none)", "No preset loaded")]
+    folder = self.settings_search_path
+    if not folder and self.output_path:
+        folder = bpy.path.abspath(self.output_path)
+    # First item: blank name so the button shows blank when no preset is active.
+    items = [('', "", "")]
     if folder and os.path.isdir(folder):
         try:
             for fname in sorted(os.listdir(folder)):
                 if fname.endswith(".smokesettings"):
                     stem = fname[: -len(".smokesettings")]
-                    full = os.path.normpath(os.path.join(folder, fname))
-                    items.append((full, stem, full))
+                    items.append((stem, stem, fname))
         except OSError:
             pass
     return items
 
 
 def _on_settings_enum_update(self, _context):
-    """Update callback for settings_file_enum — auto-load on selection change."""
-    path = self.settings_file_enum
-    if path:
-        _load_settings_from_path(self, path)
+    """Update callback for settings_file_enum — auto-load when selection changes."""
+    import os
+    stem = self.settings_file_enum
+    if not stem:
+        return
+    folder = self.settings_search_path
+    if not folder and self.output_path:
+        folder = bpy.path.abspath(self.output_path)
+    if not folder:
+        return
+    path = os.path.normpath(os.path.join(folder, stem + ".smokesettings"))
+    # Guard: don't reload if this is already the active file (avoids a
+    # redundant re-load when save/load operators set settings_file_enum).
+    if path == self.settings_file_path:
+        return
+    _load_settings_from_path(self, path)
 
 
 # ---------------------------------------------------------------------------
@@ -1346,10 +1361,9 @@ class SMOKE_OT_save_settings(bpy.types.Operator):
         s.settings_file_path   = os.path.normpath(path)
         s.settings_search_path = os.path.dirname(os.path.normpath(path))
         s.settings_snapshot    = json.dumps(data, sort_keys=True)
-        # Select the newly saved preset in the dropdown.
-        # Setting the enum value here triggers the items callback on the next
-        # draw, which will find the new file and show it selected.
-        s.settings_file_enum   = path
+        # Select the saved preset in the dropdown using the stem as identifier.
+        stem = os.path.splitext(os.path.basename(path))[0]
+        s.settings_file_enum   = stem
         self.report({'INFO'}, f"Saved preset to {os.path.basename(path)}")
         return {'FINISHED'}
 
@@ -1372,9 +1386,12 @@ class SMOKE_OT_load_settings(bpy.types.Operator):
         return {'RUNNING_MODAL'}
 
     def execute(self, context):
+        import os
         s = context.scene.smoke_settings
         _load_settings_from_path(s, self.filepath)
-        s.settings_file_enum = s.settings_file_path
+        if s.settings_file_path:
+            stem = os.path.splitext(os.path.basename(s.settings_file_path))[0]
+            s.settings_file_enum = stem
         return {'FINISHED'}
 
 
