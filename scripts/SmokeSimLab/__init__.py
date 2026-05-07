@@ -1317,8 +1317,8 @@ class SMOKE_OT_save_settings(bpy.types.Operator):
     bl_label     = "Save Preset"
     bl_options   = {'REGISTER'}
 
-    filepath    = bpy.props.StringProperty(subtype='FILE_PATH')
-    filter_glob = bpy.props.StringProperty(default="*.smokesettings", options={'HIDDEN'})
+    filepath:    bpy.props.StringProperty(subtype='FILE_PATH')
+    filter_glob: bpy.props.StringProperty(default="*.smokesettings", options={'HIDDEN'})
 
     def invoke(self, context, _event):
         s = context.scene.smoke_settings
@@ -1361,8 +1361,8 @@ class SMOKE_OT_load_settings(bpy.types.Operator):
     bl_label     = "Load Preset"
     bl_options   = {'REGISTER'}
 
-    filepath    = bpy.props.StringProperty(subtype='FILE_PATH')
-    filter_glob = bpy.props.StringProperty(default="*.smokesettings", options={'HIDDEN'})
+    filepath:    bpy.props.StringProperty(subtype='FILE_PATH')
+    filter_glob: bpy.props.StringProperty(default="*.smokesettings", options={'HIDDEN'})
 
     def invoke(self, context, _event):
         s = context.scene.smoke_settings
