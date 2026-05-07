@@ -43,7 +43,7 @@ Requires Blender 4.x (tested on 4.5.5 and 5.1.1) on Windows 10/11.  May work on 
 bl_info = {
     "name":        "SmokeSimLab",
     "author":      "Rick Palo",
-    "version":     (0, 1, 41),
+    "version":     (0, 1, 42),
     "blender":     (4, 0, 0),
     "location":    "View3D > Sidebar > SmokeLab",
     "description": "Batch smoke simulation parameter sweeper with CSV logging",
@@ -225,8 +225,8 @@ def _load_settings_from_path(s, path):
         with open(path, "r", encoding="utf-8") as fh:
             data = json.load(fh)
         _apply_settings_dict(s, data)
-        s.settings_file_path   = path
-        s.settings_search_path = os.path.dirname(path)
+        s.settings_file_path   = os.path.normpath(path)
+        s.settings_search_path = os.path.dirname(os.path.normpath(path))
     except (OSError, json.JSONDecodeError, KeyError) as exc:
         print(f"[SmokeSimLab] Failed to load settings from {path!r}: {exc}")
 
@@ -256,7 +256,7 @@ def _settings_files_enum_items(self, _context):
             for fname in sorted(os.listdir(folder)):
                 if fname.endswith(".smokesettings"):
                     stem = fname[: -len(".smokesettings")]
-                    full = os.path.join(folder, fname)
+                    full = os.path.normpath(os.path.join(folder, fname))
                     items.append((full, stem, full))
         except OSError:
             pass
@@ -1333,7 +1333,7 @@ class SMOKE_OT_save_settings(bpy.types.Operator):
     def execute(self, context):
         import json, os
         s    = context.scene.smoke_settings
-        path = self.filepath
+        path = os.path.normpath(self.filepath)
         if not path.endswith(".smokesettings"):
             path += ".smokesettings"
         data = _settings_dict(s)
@@ -1343,8 +1343,8 @@ class SMOKE_OT_save_settings(bpy.types.Operator):
         except OSError as exc:
             self.report({'ERROR'}, f"Could not save: {exc}")
             return {'CANCELLED'}
-        s.settings_file_path   = path
-        s.settings_search_path = os.path.dirname(path)
+        s.settings_file_path   = os.path.normpath(path)
+        s.settings_search_path = os.path.dirname(os.path.normpath(path))
         s.settings_snapshot    = json.dumps(data, sort_keys=True)
         # Select the newly saved preset in the dropdown.
         # Setting the enum value here triggers the items callback on the next
@@ -1372,7 +1372,9 @@ class SMOKE_OT_load_settings(bpy.types.Operator):
         return {'RUNNING_MODAL'}
 
     def execute(self, context):
-        _load_settings_from_path(context.scene.smoke_settings, self.filepath)
+        s = context.scene.smoke_settings
+        _load_settings_from_path(s, self.filepath)
+        s.settings_file_enum = s.settings_file_path
         return {'FINISHED'}
 
 
@@ -1387,7 +1389,7 @@ class SMOKE_OT_add_value(bpy.types.Operator):
     def execute(self, context):
         s       = context.scene.smoke_settings
         lst     = getattr(s, self.param + "_list")
-        default = float(getattr(s, self.param))
+        default = float(getattr(s, self.param + "_begin"))
 
         # Read hard bounds — RNA first, hardcoded _PARAM_BOUNDS as fallback.
         # The fallback matters: if RNA returns None the pattern estimator can
