@@ -14,7 +14,7 @@ Applies fluid parameters, bakes, renders playblast MP4 + final still PNG,
 appends a row to Renders/results.csv, then quits Blender.
 """
 
-WORKER_VERSION = "0.2.9"
+WORKER_VERSION = "0.2.10"
 
 import bpy
 import sys
@@ -39,19 +39,6 @@ def _log(msg):
         _log_file.flush()
 
 
-def _find_match(parent, prefix, suffix="", want_file=False):
-    """Return the most-recently-modified path in *parent* whose name matches
-    prefix_NNNN[suffix] (4-digit job index may differ from the current run).
-    Returns None if no match found."""
-    if not os.path.isdir(parent):
-        return None
-    pat   = re.compile(r'^' + re.escape(prefix) + r'_\d{4}' + re.escape(suffix) + r'$')
-    check = os.path.isfile if want_file else os.path.isdir
-    hits  = [
-        os.path.join(parent, e) for e in os.listdir(parent)
-        if pat.match(e) and check(os.path.join(parent, e))
-    ]
-    return max(hits, key=os.path.getmtime) if hits else None
 
 
 def _close_log():
@@ -256,7 +243,6 @@ if _log_path:
 
 p           = cfg["params"]
 name        = cfg["name"]
-name_prefix = name.rsplit('_', 1)[0]   # parameter key without job index
 output_path = cfg["output_path"]
 domain_name = cfg["domain_name"]
 frame_end   = cfg["frame_end"]
@@ -400,43 +386,19 @@ def _count_data_files(directory):
     return count
 
 if use_existing_cache:
-    cache_base = os.path.join(output_path, "Cache")
-    _log(f"[{name}]   Searching in         : {cache_base}")
-    if not os.path.isdir(cache_base):
-        _log(f"[{name}]   Cache base dir not found — will bake from scratch")
+    # Name is now derived purely from parameters, so every run with the same
+    # params uses the exact same cache directory — no cross-job-number search
+    # needed.  Just check if this job's own dir has usable data.
+    n_data = _count_data_files(cache_dir)
+    if n_data > 0:
+        _log(f"[{name}]   data_files={n_data} — will attempt to reuse")
     else:
-        pat = re.compile(r'^' + re.escape(name_prefix) + r'_\d{4}$')
-        _log(f"[{name}]   Pattern              : {pat.pattern!r}")
-        candidates = sorted(
-            [os.path.join(cache_base, e) for e in os.listdir(cache_base)
-             if pat.match(e) and os.path.isdir(os.path.join(cache_base, e))],
-            key=os.path.getmtime, reverse=True,
+        n_cfg = sum(
+            1 for _r, _d, _fs in os.walk(cache_dir)
+            if os.path.basename(_r) == 'config'
+            for f in _fs if re.search(r'_\d+\.uni$', f)
         )
-        _log(f"[{name}]   Candidates           : {len(candidates)}")
-        chosen = None
-        for candidate in candidates:
-            n_data = _count_data_files(candidate)
-            if n_data > 0:
-                _log(f"[{name}]     ACCEPT {os.path.basename(candidate)}  data_files={n_data}")
-                chosen = candidate
-                break
-            else:
-                # Report config-checkpoint count so false-positives are visible.
-                n_cfg = sum(
-                    1 for _r, _d, _fs in os.walk(candidate)
-                    if os.path.basename(_r) == 'config'
-                    for f in _fs if re.search(r'_\d+\.uni$', f)
-                )
-                _log(f"[{name}]     SKIP   {os.path.basename(candidate)}  data_files=0  config_uni={n_cfg}")
-
-        if chosen is not None:
-            effective_cache_dir = chosen
-            if chosen != cache_dir:
-                _log(f"[{name}]   Selected cache from different run: {chosen}")
-            else:
-                _log(f"[{name}]   Selected this job's own cache dir")
-        else:
-            _log(f"[{name}]   No candidate with data files found — using this job's cache dir")
+        _log(f"[{name}]   Cache dir empty  config_uni={n_cfg} — will bake from scratch")
 
 _log(f"[{name}]   Effective cache dir  : {effective_cache_dir}")
 
@@ -581,17 +543,10 @@ bpy.context.view_layer.update()
 
 # Always render a PNG sequence first, then convert with external ffmpeg.
 # This allows resuming after a crash and gives frame-level progress tracking.
-png_sequence_dir = os.path.join(render_dir, f"{name}_frames")
-
-# When use_placeholders is on, also accept a frames folder produced by
-# a different job-number run with identical parameters.
+# Name is parameter-derived, so the frames dir is always the same for the
+# same parameter combination — no fuzzy cross-run search needed.
+png_sequence_dir     = os.path.join(render_dir, f"{name}_frames")
 effective_frames_dir = png_sequence_dir
-if use_placeholders:
-    alt_frames = _find_match(render_dir, name_prefix, suffix="_frames")
-    if alt_frames:
-        effective_frames_dir = alt_frames
-        if alt_frames != png_sequence_dir:
-            _log(f"[{name}] Found existing frames dir from different run: {alt_frames}")
 
 os.makedirs(effective_frames_dir, exist_ok=True)
 if render_mode == "EEVEE":

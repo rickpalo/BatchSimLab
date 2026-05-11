@@ -43,7 +43,7 @@ Requires Blender 4.x (tested on 4.5.5 and 5.1.1) on Windows 10/11.  May work on 
 bl_info = {
     "name":        "SmokeSimLab",
     "author":      "Rick Palo",
-    "version":     (0, 2, 9),
+    "version":     (0, 2, 10),
     "blender":     (4, 0, 0),
     "location":    "View3D > Sidebar > SmokeLab",
     "description": "Batch smoke simulation parameter sweeper with CSV logging",
@@ -71,7 +71,7 @@ DOCS_URL = "https://github.com/rickpalo/SmokeSimLab"
 # Expected version strings in the helper files exported to the output folder.
 # When Run Batch detects a mismatch it warns the user to re-run Export Batch.
 # Keep these in sync with WORKER_VERSION / LAUNCHER_VERSION in those files.
-_EXPECTED_WORKER_VERSION   = "0.2.9"
+_EXPECTED_WORKER_VERSION   = "0.2.10"
 _EXPECTED_LAUNCHER_VERSION = "0.2.6"
 
 
@@ -560,21 +560,20 @@ def generate_jobs(s):
     return generate_jobs_all(s)
 
 
-def make_name(p, index=0):
+def make_name(p):
     """
-    Build a unique, human-readable filename stem from a job-parameter dict.
+    Build a human-readable filename stem from a job-parameter dict.
 
     Format:
-        R<res>_V<vort>_A<alpha>_B<beta>_D<dissolve|OFF>_N<noise|OFF>_NNNN
+        R<res>_V<vort>_A<alpha>_B<beta>_D<dissolve|OFF>_N<noise|OFF>
 
-    The zero-padded index suffix guarantees uniqueness even when two
-    parameter combinations would otherwise produce the same string
-    (e.g. when rounding collapses close float values).
+    The name is derived purely from simulation parameters so that identical
+    parameter combinations always map to the same cache directory, render
+    directory, and output files — regardless of job order or batch index.
 
     Parameters
     ----------
-    p     : dict  — job parameter dict from generate_jobs()
-    index : int   — zero-based job index
+    p : dict — job parameter dict from generate_jobs()
 
     Returns
     -------
@@ -595,8 +594,7 @@ def make_name(p, index=0):
         f"A{round(p['alpha'], 2)}_"
         f"B{round(p['beta'], 2)}_"
         f"{dissolve_part}_"
-        f"{noise_part}_"
-        f"{index:04d}"
+        f"{noise_part}"
     )
 
 
@@ -729,12 +727,12 @@ def export_batch(context):
     for i, p in enumerate(jobs):
         _log_row = s.job_log_items.add()
         _log_row.job_number = i + 1
-        _log_row.job_name   = make_name(p, i)
+        _log_row.job_name   = make_name(p)
         _log_row.status     = 'NOT_STARTED'
 
     # ── Write one JSON + one .bat entry per job ──────────────────────────────
     for i, p in enumerate(jobs):
-        name      = make_name(p, i)  # computed once; reused in log row + JSON
+        name      = make_name(p)
         job_path  = os.path.join(jobs_dir, f"job_{i:04d}.json")
         log_path  = os.path.join(jobs_dir, f"job_{i:04d}.log")
         done_path = os.path.join(jobs_dir, f"job_{i:04d}.done")
