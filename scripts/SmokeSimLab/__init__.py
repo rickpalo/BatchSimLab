@@ -43,7 +43,7 @@ Requires Blender 4.x (tested on 4.5.5 and 5.1.1) on Windows 10/11.  May work on 
 bl_info = {
     "name":        "SmokeSimLab",
     "author":      "Rick Palo",
-    "version":     (0, 2, 10),
+    "version":     (0, 2, 11),
     "blender":     (4, 0, 0),
     "location":    "View3D > Sidebar > SmokeLab",
     "description": "Batch smoke simulation parameter sweeper with CSV logging",
@@ -723,12 +723,14 @@ def export_batch(context):
 
     # ── Seed the Job Log list (one row per job, status=NOT_STARTED) ─────────
     _job_statuses.clear()
+    _job_log_rows.clear()
     s.job_log_items.clear()
     for i, p in enumerate(jobs):
         _log_row = s.job_log_items.add()
         _log_row.job_number = i + 1
         _log_row.job_name   = make_name(p)
         _log_row.status     = 'NOT_STARTED'
+        _job_log_rows.append((i + 1, make_name(p)))
 
     # ── Write one JSON + one .bat entry per job ──────────────────────────────
     for i, p in enumerate(jobs):
@@ -889,14 +891,20 @@ class SMOKE_UL_job_log(bpy.types.UIList):
     def draw_item(self, context, layout, data, item, icon,
                   active_data, active_propname):
         if self.layout_type in {'DEFAULT', 'COMPACT'}:
-            if not item.job_name:
-                return  # transiently-zeroed RNA item; skip rather than show blank row
-            status = _job_statuses.get(item.job_number, item.status)
+            # Read job_number from the RNA item only to use as a key/index.
+            # All display text comes from module-level _job_log_rows / _job_statuses
+            # so that timer writes to SmokeSettings never blank the row.
+            job_number = item.job_number          # 0 when RNA item is transiently zeroed
+            idx        = job_number - 1           # 0-based index into _job_log_rows
+            if job_number == 0 or idx >= len(_job_log_rows):
+                return
+            _, job_name = _job_log_rows[idx]
+            status      = _job_statuses.get(job_number, item.status)
             split = layout.split(factor=0.10, align=True)
             split.label(icon=self._STATUS_ICONS.get(status, 'NONE'), text="")
             inner = split.split(factor=0.22, align=True)
-            inner.label(text=str(item.job_number))
-            inner.label(text=item.job_name)
+            inner.label(text=str(job_number))
+            inner.label(text=job_name)
 
     def draw_filter(self, context, layout):
         pass  # suppress the filter / sort bar
@@ -1836,10 +1844,12 @@ def _compute_batch_summary(jobs_dir, elapsed_secs):
 
 
 # ---------------------------------------------------------------------------
-# Job log status cache — keyed by job_number (1-based).
-# _update_job_log_statuses writes here instead of to item.status directly,
-# avoiding the timer–draw RNA race that blanks CollectionProperty rows.
-_job_statuses: dict = {}   # {job_number: status_string}
+# Job log display data — populated at export, never touched by the timer.
+# draw_item reads from these dicts/lists instead of from CollectionProperty
+# item fields, so no RNA read of item data happens during a draw pass that
+# could return default values due to timer-triggered PropertyGroup re-eval.
+_job_statuses:  dict = {}   # {job_number: status_string}  — written by timer
+_job_log_rows:  list = []   # [(job_number, job_name), ...]  — written at export only
 
 # ---------------------------------------------------------------------------
 # Job log auto-scroll: last index the timer wrote, so we can detect manual scrolls.
@@ -3003,6 +3013,7 @@ class SMOKE_OT_remove_all_jobs(bpy.types.Operator):
         s.show_job_log           = False
         s.job_log_auto_scroll    = True
         _job_statuses.clear()
+        _job_log_rows.clear()
         s.job_log_items.clear()
         s.batch_total            = 0
         s.batch_jobs_dir         = ""
@@ -3534,6 +3545,7 @@ def _reset_on_load(dummy=None):
         s.show_job_log           = False
         s.job_log_auto_scroll    = True
         _job_statuses.clear()
+        _job_log_rows.clear()
         s.job_log_items.clear()
         s.batch_total          = 0
         s.batch_jobs_dir       = ""

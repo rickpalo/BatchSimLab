@@ -4,6 +4,71 @@ Items to address once file synchronization catches up (~5,000 PNGs behind as of 
 
 ---
 
+## 🔴 TODO-20 (HIGH PRIORITY): Crashes not being caught / logged
+
+**Observed (2026-05-11):** Blender crashes are still occurring during batch runs and
+are not being recorded — no crash log written, launcher does not detect the crash,
+and the job log UI shows no FAILED indicator.
+
+**Current crash-suppression stack (v0.2.6+):**
+- Windows Job Object with `JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION` (prevents
+  WerFault dialog from blocking the launcher)
+- `_find_werfault_for_pid` polls for `WerFault.exe` / `WerFaultSecure.exe`
+- `_save_crash_log` called on any non-zero exit code
+- `_POLLER_STALE_SECS = 35 min` stale-detection in the UI timer
+
+**Possible failure modes to investigate:**
+1. **Blender exits with code 0 on crash** — Python `sys.exit(0)` paths inside
+   Blender report success; launcher only flags non-zero exits.  A worker Python
+   exception that is caught internally and then `sys.exit(0)` is called will look
+   like a clean finish.
+2. **Blender hangs (no exit)** — Job Object limit only fires on unhandled exceptions;
+   a deadlock or infinite loop produces no exit at all.  The 35-min stale marker
+   in the UI is the only safeguard, and it requires Blender's log to stop updating.
+3. **Job Object creation fails silently** — `_create_crash_suppression_job` returns
+   `None` on any `OSError`; the launcher falls back to `SEM_NOGPFAULTERRORBOX` only.
+   If the Job Object failed, WerFault may still block.
+4. **Crash before log file is created** — if Blender crashes before the worker writes
+   a single log line, the launcher has no log to associate with the crash.
+
+**Proposed investigation steps:**
+- Add launcher logging: write the Job Object handle value (or "FAILED") to stderr at
+  startup.
+- Add a per-job **timeout**: if the launcher process is still alive after
+  `(estimated_bake_secs + estimated_render_secs) × N` seconds, kill it and mark as
+  CRASHED.  This handles the hang case.
+- On non-zero exit *or* timeout, write the Blender `returncode` and last N lines of
+  `blender_stderr.txt` to `crash_log.txt`.
+- Consider writing a `.crashed` sentinel file (distinct from `.done`) that the UI
+  timer shows as a red CRASHED state in the job log.
+
+---
+
+## 🔴 TODO-21 (HIGH PRIORITY): Job Log rows blank for in-progress and completed jobs
+
+**Observed (2026-05-11):** After v0.2.9's `_job_statuses` dict fix (which moved
+`item.status` writes out of the poll timer), rows for IN_PROGRESS and COMPLETE jobs
+still go entirely blank — no job number, no job name, no status dot.
+
+**Root cause (revised):** The v0.2.9 fix only moved `item.status` to a module-level
+dict.  `draw_item` still reads `item.job_name` and `item.job_number` directly from
+the `CollectionProperty` item.  Any RNA write to the parent `SmokeSettings`
+PropertyGroup from the poll timer (e.g. `s.batch_progress`, `s.job_log_index`,
+`s.job_log_auto_scroll`) may trigger Blender to re-evaluate the PropertyGroup,
+momentarily returning default values (0 / "") for CollectionProperty item fields
+during the same draw pass.
+
+**Correct fix:** Store ALL display data (job_number, job_name) in a module-level list
+`_job_log_rows: list[(int, str)]` populated at export time.  `draw_item` reads only
+`item.job_number` from RNA (as a collection-index proxy; if 0, skip the row) and
+looks up job_name from `_job_log_rows`.  The poll timer never writes to any
+CollectionProperty item field — not status, not number, not name.
+
+**Files:** `__init__.py` — `_job_log_rows`, `export_batch`, `draw_item`,
+`SMOKE_OT_remove_all_jobs.execute`, `_reset_on_load`.
+
+---
+
 ## ~~TODO-1~~: Crash log written to jobs folder — **DONE** (already implemented in launcher)
 
 ---
