@@ -5,14 +5,13 @@ Output appears in this same text editor (as "preflight_report") and in the
 System Console (Window > Toggle System Console on Windows).
 
 What it checks:
-  1. Every fluid domain in the scene — type, cache path, exists, file count
-  2. SmokeSimLab addon status and current parameter settings
-  3. Expected cache path for the current single-value settings (pre-export check)
+  1. SmokeSimLab addon status and current parameter settings
+  2. Expected cache path for the current (single-value) settings
+  3. Every fluid domain in the scene — type, cache path, exists, file count
   4. Whether domain cache_directory matches the expected SmokeSimLab path
-  5. Cache directory contents for all existing Cache/ subdirs under output_path
+  5. Cache directory inventory (all subdirs under output_path/Cache/)
 
-Run BEFORE Export Batch to catch path mismatches before the batch starts.
-Requires SmokeSimLab addon to be ENABLED in Preferences > Add-ons.
+Requires SmokeSimLab to be ENABLED in Preferences > Add-ons.
 """
 
 import bpy
@@ -54,26 +53,21 @@ def _section(lines, title):
 # ---------------------------------------------------------------------------
 
 def _find_smokeSimLab():
-    """Return (addon_module, smoke_settings_or_None, status_string)."""
-    # Check if smoke_settings is registered on the scene
+    """Return (addon_module_or_None, smoke_settings_or_None, status_string)."""
     scene = bpy.context.scene
+
+    # Primary check: is the addon registered on the scene?
     if hasattr(scene, 'smoke_settings'):
         s = scene.smoke_settings
-        # Verify it's actually SmokeSettings, not an unrelated property
         if hasattr(s, 'output_path') and hasattr(s, 'job_log_items'):
-            # Try to get the module
             mod = sys.modules.get('SmokeSimLab')
             return mod, s, "LOADED"
 
-    # Not on scene — check if it's installed but not registered
-    installed = any(
-        'SmokeSimLab' in addon
-        for addon in bpy.context.preferences.addons.keys()
-    )
-    if installed:
+    # Installed but not registered (disabled in Preferences)
+    if any('SmokeSimLab' in k for k in bpy.context.preferences.addons.keys()):
         return None, None, "INSTALLED_BUT_NOT_REGISTERED"
 
-    # Check if module is importable (script-style install)
+    # Importable via sys.path (not installed as an addon)
     try:
         import importlib
         mod = importlib.import_module('SmokeSimLab')
@@ -81,15 +75,29 @@ def _find_smokeSimLab():
     except ImportError:
         pass
 
-    # Check if the scripts folder is in sys.path
-    scripts_dir = os.path.join(
-        os.path.dirname(os.path.abspath(__file__)), '..', 'scripts', 'SmokeSimLab'
-    )
-    scripts_dir = os.path.normpath(scripts_dir)
-    if os.path.isdir(scripts_dir):
-        return None, None, f"FOUND_ON_DISK_NOT_IN_PATH ({scripts_dir})"
-
     return None, None, "NOT_FOUND"
+
+
+def _baseline_params(s, mod):
+    """Build a single-value param dict from current SmokeSettings.
+
+    Uses expand_param() if the module is available, otherwise falls back to
+    reading the *_begin attribute directly (same as expand_param does when no
+    range/list mode is active).
+    """
+    _SWEEP = [
+        "resolution", "vorticity", "alpha", "beta",
+        "dissolve_speed", "noise_upres", "noise_strength", "noise_spatial_scale",
+    ]
+    if mod and hasattr(mod, 'expand_param'):
+        vals = {name: mod.expand_param(s, name)[0] for name in _SWEEP}
+    else:
+        vals = {name: getattr(s, name + "_begin") for name in _SWEEP}
+
+    vals["use_dissolve"]  = s.use_dissolve
+    vals["slow_dissolve"] = getattr(s, 'slow_dissolve', False)
+    vals["use_noise"]     = s.use_noise
+    return vals
 
 
 # ---------------------------------------------------------------------------
@@ -102,63 +110,73 @@ lines.append(f"Blend   : {bpy.data.filepath or '(unsaved)'}")
 lines.append(f"Blender : {bpy.app.version_string}")
 lines.append(f"Python  : {sys.version.split()[0]}")
 
-# ── 1. Addon status ─────────────────────────────────────────────────────────
-_section(lines, "1. SmokeSimLab Addon Status")
+# ── 1. Addon / settings ─────────────────────────────────────────────────────
+_section(lines, "1. SmokeSimLab Addon & Current Settings")
 
-_addon_mod, _settings, _addon_status = _find_smokeSimLab()
-lines.append(f"  Status : {_addon_status}")
+_mod, _s, _status = _find_smokeSimLab()
+lines.append(f"  Addon status : {_status}")
 
-if _addon_status == "INSTALLED_BUT_NOT_REGISTERED":
-    lines.append("  ACTION : Enable SmokeSimLab in Preferences > Add-ons, then")
-    lines.append("           re-run this script.")
-elif _addon_status == "NOT_FOUND":
+if _status == "INSTALLED_BUT_NOT_REGISTERED":
+    lines.append("  ACTION : Enable SmokeSimLab in Preferences > Add-ons, then re-run.")
+elif _status == "NOT_FOUND":
     lines.append("  ACTION : Install SmokeSimLab via Preferences > Add-ons > Install.")
-elif _addon_status.startswith("FOUND_ON_DISK"):
-    lines.append("  ACTION : Install SmokeSimLab as an addon or add its scripts/")
-    lines.append("           folder to Blender's script paths.")
 
-if _settings is not None:
-    s = _settings
-    lines.append(f"\n  output_path       : {s.output_path!r}")
+_expected_cache = None
+_expected_name  = None
+
+if _s is not None:
+    s = _s
+    lines.append(f"  output_path      : {s.output_path!r}")
     lines.append(f"  use_existing_cache: {s.use_existing_cache}")
-    lines.append(f"  resolution        : {s.resolution}")
-    lines.append(f"  voxel_size        : {getattr(s, 'voxel_size', 'n/a')}")
-    lines.append(f"  add_amount        : {s.add_amount}")
-    lines.append(f"  buoyancy          : {s.buoyancy}")
-    lines.append(f"  density           : {s.density}")
-    lines.append(f"  noise_strength    : {s.noise_strength}")
-    lines.append(f"  noise_scale       : {s.noise_scale}")
-    lines.append(f"  frame_start/end   : {bpy.context.scene.frame_start} – {bpy.context.scene.frame_end}")
-    lines.append(f"  job_log_items     : {len(s.job_log_items)} saved")
+    lines.append(f"  frame range      : {bpy.context.scene.frame_start} – {bpy.context.scene.frame_end}")
+    lines.append(f"  job_log_items    : {len(s.job_log_items)} saved")
+    lines.append("")
 
-    # Compute expected job name from current (single) settings
-    if _addon_mod and hasattr(_addon_mod, 'make_name'):
-        try:
-            _p = {
-                'resolution':     s.resolution,
-                'voxel_size':     getattr(s, 'voxel_size', 0.0),
-                'add_amount':     s.add_amount,
-                'buoyancy':       s.buoyancy,
-                'density':        s.density,
-                'noise_strength': s.noise_strength,
-                'noise_scale':    s.noise_scale,
-            }
-            _expected_name  = _addon_mod.make_name(_p)
-            _out_abs        = bpy.path.abspath(s.output_path) if s.output_path else ""
-            _expected_cache = os.path.join(_out_abs, "Cache", _expected_name) if _out_abs else "(no output_path)"
-            lines.append(f"\n  Expected job name : {_expected_name}")
-            lines.append(f"  Expected cache    : {_expected_cache}")
-        except Exception as e:
-            lines.append(f"\n  (could not compute expected job name: {e})")
-            _expected_name  = None
-            _expected_cache = None
-    else:
-        _expected_name  = None
-        _expected_cache = None
+    # Current single-value parameters (using _begin attributes)
+    _DISPLAY = [
+        ("resolution",         "resolution_begin",         "int"),
+        ("vorticity",          "vorticity_begin",          "float"),
+        ("alpha",              "alpha_begin",              "float"),
+        ("beta",               "beta_begin",               "float"),
+        ("use_dissolve",       "use_dissolve",             "bool"),
+        ("dissolve_speed",     "dissolve_speed_begin",     "int"),
+        ("use_noise",          "use_noise",                "bool"),
+        ("noise_upres",        "noise_upres_begin",        "int"),
+        ("noise_strength",     "noise_strength_begin",     "float"),
+        ("noise_spatial_scale","noise_spatial_scale_begin","float"),
+    ]
+    for label, attr, kind in _DISPLAY:
+        val = getattr(s, attr, "n/a")
+        lines.append(f"  {label:22s}: {val}")
+
+    # Compute expected job name and cache path
+    try:
+        p = _baseline_params(s, _mod)
+        if _mod and hasattr(_mod, 'make_name'):
+            _expected_name = _mod.make_name(p)
+        else:
+            # Inline make_name for when the module isn't accessible
+            _dissolve = (f"D{int(p['dissolve_speed'])}" if p['use_dissolve'] else "D-OFF")
+            _noise    = (
+                f"N{int(p['noise_upres'])}_NS{round(p['noise_strength'],2)}_SC{round(p['noise_spatial_scale'],2)}"
+                if p['use_noise'] else "N-OFF"
+            )
+            _expected_name = (
+                f"R{int(p['resolution'])}_V{round(p['vorticity'],2)}_"
+                f"A{round(p['alpha'],2)}_B{round(p['beta'],2)}_"
+                f"{_dissolve}_{_noise}"
+            )
+
+        _out_abs = bpy.path.abspath(s.output_path) if s.output_path else ""
+        _expected_cache = os.path.join(_out_abs, "Cache", _expected_name) if _out_abs else None
+
+        lines.append("")
+        lines.append(f"  Expected job name : {_expected_name}")
+        lines.append(f"  Expected cache    : {_expected_cache or '(no output_path)'}")
+    except Exception as e:
+        lines.append(f"\n  WARNING: could not compute expected job name: {e}")
 else:
-    _expected_name  = None
-    _expected_cache = None
-    s               = None
+    s = None
 
 # ── 2. Fluid domains ────────────────────────────────────────────────────────
 _section(lines, "2. Fluid Domains in Scene")
@@ -169,19 +187,16 @@ for obj in bpy.data.objects:
         if mod.type != 'FLUID':
             continue
 
-        # Blender 3+ API: mod.fluid_type
         fluid_type = getattr(mod, 'fluid_type', None)
-        # Older fallback via fluid_settings
         if fluid_type is None:
             fs = getattr(mod, 'fluid_settings', None)
             fluid_type = getattr(fs, 'type', None) if fs else None
 
         if fluid_type not in ('DOMAIN', None):
-            continue  # skip FLOW / EFFECTOR / etc.
+            continue
 
         domain_settings = getattr(mod, 'domain_settings', None)
         if domain_settings is None:
-            # Older API fallback
             fs = getattr(mod, 'fluid_settings', None)
             if fs and getattr(fs, 'type', '') == 'DOMAIN':
                 domain_settings = fs
@@ -194,34 +209,26 @@ for obj in bpy.data.objects:
         exists        = os.path.isdir(cache_dir_abs)
         file_count    = _count_data_files(cache_dir_abs) if exists else 0
 
-        # BUG-004: would reassigning the same path reinitialize Mantaflow?
-        #   v0.2.15+ guard skips assignment when paths are equal — but only
-        #   when the worker's effective_cache_dir equals cache_directory.
-        #   If SmokeSimLab will assign a DIFFERENT path (e.g. current is 'm2'
-        #   but job needs 'R128_V0.0_...'), the assignment is necessary and
-        #   will destroy any files currently at cache_dir_abs.
         if _expected_cache:
-            _same_as_expected = _norm(cache_dir_abs) == _norm(_expected_cache)
-            _bug004_note = (
-                "same path — BUG-004 guard will SKIP assignment (VDB safe)"
-                if _same_as_expected
-                else "DIFFERENT path — assignment will run, VDB files at current dir may be deleted"
+            same_path  = _norm(cache_dir_abs) == _norm(_expected_cache)
+            bug004_msg = (
+                "SAFE — paths equal, BUG-004 guard will skip assignment"
+                if same_path
+                else "DIFFERENT PATH — assignment will run (necessary, but wipes files at current dir)"
             )
         else:
-            _bug004_note = "cannot compare — addon settings not loaded"
+            same_path  = None
+            bug004_msg = "cannot check — addon not loaded"
 
-        lines.append(f"\nObject        : {obj.name}")
-        lines.append(f"  Modifier      : {mod.name} ({mod.type})")
+        lines.append(f"\nObject        : {obj.name}  [{mod.name}]")
         lines.append(f"  Domain type   : {getattr(domain_settings, 'domain_type', 'n/a')}")
         lines.append(f"  cache_dir raw : {cache_dir!r}")
         lines.append(f"  cache_dir abs : {cache_dir_abs}")
         lines.append(f"  Dir exists    : {_yesno(exists)}")
         lines.append(f"  Data files    : {file_count}")
-        lines.append(f"  BUG-004       : {_bug004_note}")
-
+        lines.append(f"  BUG-004       : {bug004_msg}")
         if _expected_cache:
-            match = _norm(cache_dir_abs) == _norm(_expected_cache)
-            lines.append(f"  Path match    : {_yesno(match)} vs expected {_expected_cache}")
+            lines.append(f"  Path match    : {_yesno(same_path)} (expected: {_expected_cache})")
 
         domains_found.append({
             'obj':        obj.name,
@@ -236,30 +243,30 @@ if not domains_found:
 # ── 3. Cache directory inventory ────────────────────────────────────────────
 _section(lines, "3. Cache Directory Inventory")
 
-_out_abs = ""
-if s and s.output_path:
-    _out_abs = bpy.path.abspath(s.output_path)
-
+_out_abs = bpy.path.abspath(s.output_path) if (s and s.output_path) else ""
 if _out_abs:
     _cache_root = os.path.join(_out_abs, "Cache")
     if os.path.isdir(_cache_root):
-        _subdirs = sorted(os.listdir(_cache_root))
+        _subdirs = sorted(
+            d for d in os.listdir(_cache_root)
+            if os.path.isdir(os.path.join(_cache_root, d))
+        )
         if _subdirs:
-            lines.append(f"  Cache root: {_cache_root}")
+            lines.append(f"  Root: {_cache_root}")
             for sub in _subdirs:
-                sub_path   = os.path.join(_cache_root, sub)
-                sub_count  = _count_data_files(sub_path)
-                marker     = " ← current domain" if any(
-                    _norm(d['cache_dir']) == _norm(sub_path) for d in domains_found
-                ) else ""
-                expected_m = " ← expected for current settings" if (
-                    _expected_cache and _norm(sub_path) == _norm(_expected_cache)
-                ) else ""
-                lines.append(f"    {sub:40s}  {sub_count:5d} files{marker}{expected_m}")
+                sub_path = os.path.join(_cache_root, sub)
+                sub_cnt  = _count_data_files(sub_path)
+                tags = []
+                if any(_norm(d['cache_dir']) == _norm(sub_path) for d in domains_found):
+                    tags.append("← domain")
+                if _expected_cache and _norm(sub_path) == _norm(_expected_cache):
+                    tags.append("← expected")
+                tag_str = "  " + "  ".join(tags) if tags else ""
+                lines.append(f"    {sub:<44s} {sub_cnt:5d} files{tag_str}")
         else:
-            lines.append(f"  Cache root exists but is empty: {_cache_root}")
+            lines.append(f"  Cache root is empty: {_cache_root}")
     else:
-        lines.append(f"  Cache root does not exist yet: {_cache_root}")
+        lines.append(f"  Cache root not yet created: {_cache_root}")
         lines.append("  (first batch run will create it)")
 else:
     lines.append("  (output_path not set — cannot locate Cache root)")
@@ -268,26 +275,27 @@ else:
 _section(lines, "4. Summary")
 
 _warn = 0
-for d in domains_found:
-    if not d['exists']:
-        lines.append(f"  WARN: {d['obj']} cache dir missing — full bake will run")
-        _warn += 1
-    elif d['file_count'] == 0:
-        lines.append(f"  INFO: {d['obj']} cache is empty — full bake will run")
-        _warn += 1
-    else:
-        lines.append(f"  OK  : {d['obj']} cache has {d['file_count']} data files")
+if _status != "LOADED":
+    lines.append(f"  WARN  Addon not loaded ({_status}) — parameter check skipped")
+    _warn += 1
 
 if not domains_found:
-    lines.append("  WARN: No fluid domains found in scene")
+    lines.append("  WARN  No fluid domains found in scene")
     _warn += 1
 
-if _addon_status != "LOADED":
-    lines.append(f"  WARN: SmokeSimLab addon not loaded — parameter check skipped ({_addon_status})")
-    _warn += 1
+for d in domains_found:
+    if not d['exists']:
+        lines.append(f"  INFO  {d['obj']}: cache missing → full bake will run")
+    elif d['file_count'] == 0:
+        lines.append(f"  INFO  {d['obj']}: cache empty → full bake will run")
+    else:
+        lines.append(f"  OK    {d['obj']}: {d['file_count']} data files ready")
 
 lines.append("")
-lines.append(f"  {'Ready for export batch.' if _warn == 0 else f'{_warn} item(s) need attention — see above.'}")
+if _warn == 0:
+    lines.append("  Ready for export batch.")
+else:
+    lines.append(f"  {_warn} warning(s) — see above.")
 lines.append("")
 
 # ---------------------------------------------------------------------------
