@@ -4,7 +4,13 @@ import types
 import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
 
-from SmokeSimLab import expand_param, generate_jobs_limited, generate_jobs_all, make_name
+from SmokeSimLab import (
+    expand_param,
+    generate_jobs_limited,
+    generate_jobs_all,
+    make_name,
+    _dedupe_jobs,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -532,3 +538,124 @@ class TestMakeName:
         p1 = self._base_params(resolution=64)
         p2 = self._base_params(resolution=128)
         assert make_name(p1) != make_name(p2)
+
+
+# ---------------------------------------------------------------------------
+# _dedupe_jobs — collapses identical jobs produced by overlapping sweeps
+# ---------------------------------------------------------------------------
+
+class TestDedupeJobs:
+    def _job(self, **overrides):
+        p = {
+            "resolution":          128,
+            "vorticity":           0.0,
+            "alpha":               1.0,
+            "beta":                1.0,
+            "dissolve_speed":      300,
+            "noise_upres":         1,
+            "noise_strength":      0.25,
+            "noise_spatial_scale": 0.5,
+            "use_dissolve":        True,
+            "slow_dissolve":       False,
+            "use_noise":           True,
+        }
+        p.update(overrides)
+        return p
+
+    def test_empty_list_returns_empty(self):
+        assert _dedupe_jobs([]) == []
+
+    def test_all_unique_unchanged(self):
+        jobs = [self._job(vorticity=0.0),
+                self._job(vorticity=0.1),
+                self._job(vorticity=0.2)]
+        assert _dedupe_jobs(jobs) == jobs
+
+    def test_all_identical_collapsed_to_one(self):
+        jobs = [self._job(), self._job(), self._job()]
+        result = _dedupe_jobs(jobs)
+        assert len(result) == 1
+        assert result[0] == self._job()
+
+    def test_preserves_first_seen_order(self):
+        a = self._job(vorticity=0.1)
+        b = self._job(vorticity=0.2)
+        c = self._job(vorticity=0.3)
+        jobs = [a, b, a, c, b]  # duplicates after first occurrence
+        assert _dedupe_jobs(jobs) == [a, b, c]
+
+    def test_differs_only_in_slow_dissolve_kept_separate(self):
+        # slow_dissolve doesn't appear in make_name but does affect the bake,
+        # so two jobs differing only in slow_dissolve are NOT duplicates.
+        a = self._job(slow_dissolve=False)
+        b = self._job(slow_dissolve=True)
+        assert _dedupe_jobs([a, b]) == [a, b]
+
+    def test_user_batch_regression(self):
+        # Reproduces the May-18 production batch: 38 jobs from 8 axis sweeps
+        # where each sweep starts at the axis's default value, producing 8
+        # baseline duplicates targeting the same cache directory.
+        s = _make_settings(
+            iteration_mode="LIMITED",
+            use_dissolve=True,
+            dissolve_speed_begin=300,
+            dissolve_speed_end=300,
+            use_noise=True,
+            iterate_dissolve_both=True,
+            iterate_noise_both=True,
+            # Resolution: 1-item list including baseline
+            resolution_use_list=True,
+            resolution_list=[_item(128)],
+            # Vorticity sweep starting at default (0.0)
+            vorticity_use_range=True,
+            vorticity_begin=0.0, vorticity_end=0.3, vorticity_step=0.1,
+            # Alpha sweep starting at default (1.0)
+            alpha_use_range=True,
+            alpha_begin=1.0, alpha_end=3.0, alpha_step=0.5,
+            # Beta sweep starting at default (1.0)
+            beta_use_range=True,
+            beta_begin=1.0, beta_end=3.0, beta_step=0.5,
+            # Dissolve list including baseline (300)
+            dissolve_speed_use_list=True,
+            dissolve_speed_list=[_item(300), _item(400)],
+            # Noise upres sweep starting at default (1)
+            noise_upres_begin=1, noise_upres_end=4,
+            noise_upres_use_range=True, noise_upres_step=1,
+            # Noise strength sweep starting at default (0.25)
+            noise_strength_use_range=True,
+            noise_strength_begin=0.25, noise_strength_end=2.0,
+            noise_strength_step=0.25,
+            # Noise spatial scale sweep starting at default (0.5)
+            noise_spatial_scale_use_range=True,
+            noise_spatial_scale_begin=0.5, noise_spatial_scale_end=2.0,
+            noise_spatial_scale_step=0.25,
+        )
+        raw    = list(generate_jobs_limited(s))
+        unique = _dedupe_jobs(raw)
+        # Before fix the production batch had 38 jobs with 7 hidden duplicates
+        # of the baseline (8 total occurrences of the baseline combo).
+        assert len(raw) > len(unique), "expected raw run to contain duplicates"
+        # All eight sweep-axes that include the baseline value collapse to
+        # exactly one baseline job in the deduped set.
+        baseline_key = (
+            128,                # resolution (note: _item(128) makes it float)
+            0.0,                # vorticity
+            1.0,                # alpha
+            1.0,                # beta
+            300,                # dissolve_speed
+            1,                  # noise_upres
+            0.25,               # noise_strength
+            0.5,                # noise_spatial_scale
+        )
+        baselines = [
+            j for j in unique
+            if (int(j["resolution"]), round(j["vorticity"], 2),
+                round(j["alpha"], 2), round(j["beta"], 2),
+                int(j["dissolve_speed"]), int(j["noise_upres"]),
+                round(j["noise_strength"], 2),
+                round(j["noise_spatial_scale"], 2)) == baseline_key
+            and j["use_dissolve"] and j["use_noise"]
+        ]
+        assert len(baselines) == 1, (
+            f"expected exactly 1 baseline after dedup, got {len(baselines)}"
+        )

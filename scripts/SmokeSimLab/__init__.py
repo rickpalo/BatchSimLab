@@ -43,7 +43,7 @@ Requires Blender 4.x (tested on 4.5.5 and 5.1.1) on Windows 10/11.  May work on 
 bl_info = {
     "name":        "SmokeSimLab",
     "author":      "Rick Palo",
-    "version":     (0, 2, 20),
+    "version":     (0, 2, 21),
     "blender":     (4, 0, 0),
     "location":    "View3D > Sidebar > SmokeLab",
     "description": "Batch smoke simulation parameter sweeper with CSV logging",
@@ -555,6 +555,32 @@ def generate_jobs(s):
     return generate_jobs_all(s)
 
 
+def _dedupe_jobs(jobs):
+    """
+    Return a new list with duplicate jobs removed, preserving first-seen order.
+
+    Every axis sweep in generate_jobs_limited starts from the baseline (all
+    other params at default), so when a sweep value equals that axis's default
+    the baseline combination is emitted again.  An 8-axis sweep produces up to
+    8 baseline duplicates per batch — each one targets the same cache directory
+    (make_name is param-only) and would re-bake redundantly, with each FULL
+    BAKE branch calling bpy.ops.fluid.free_all() to wipe the previous bake.
+
+    Two jobs are duplicates iff every param value is equal.
+    """
+    seen   = set()
+    unique = []
+    for j in jobs:
+        # All job values are scalar (int/float/bool), so a tuple of sorted
+        # items is hashable and stable across runs.
+        key = tuple(sorted(j.items()))
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(j)
+    return unique
+
+
 def make_name(p):
     """
     Build a human-readable filename stem from a job-parameter dict.
@@ -645,7 +671,9 @@ def export_batch(context):
 
     Returns
     -------
-    (job_count, bat_path) : (int, str)
+    (job_count, bat_path, dup_count) : (int, str, int)
+        dup_count is the number of identical job dicts that were collapsed
+        before writing (see _dedupe_jobs).
 
     Raises
     ------
@@ -688,6 +716,9 @@ def export_batch(context):
         frame_end   = s.sim_frame_end
     python_exe  = sys.executable   # Blender's bundled Python — always on disk, no PATH needed
     jobs        = list(generate_jobs(s))
+    _raw_count  = len(jobs)
+    jobs        = _dedupe_jobs(jobs)
+    _dup_count  = _raw_count - len(jobs)
     jobs.sort(key=lambda p: p.get("resolution", 0))
 
     # ── Pre-compute per-job emitter densities (done once, not in the worker) ──
@@ -741,9 +772,10 @@ def export_batch(context):
     ]
 
     _dbg = s.collect_debug_log
+    _dedup_note = f"  (deduplicated {_dup_count} identical job(s))" if _dup_count else ""
     _debug_log(_dbg, output_path, "addon",
                f"export_batch: {'append' if is_append else 'replace'}  "
-               f"{len(jobs)} new job(s) starting at {job_start_index}  "
+               f"{len(jobs)} new job(s) starting at {job_start_index}{_dedup_note}  "
                f"blend={bpy.data.filepath!r}  out={output_path!r}  "
                f"bpy={bpy.app.version_string}")
 
@@ -848,7 +880,7 @@ def export_batch(context):
     with open(bat_path, "w") as fh:
         fh.write("\n".join(bat_lines))
 
-    return len(jobs), bat_path
+    return len(jobs), bat_path, _dup_count
 
 
 # ---------------------------------------------------------------------------
@@ -1478,16 +1510,17 @@ class SMOKE_OT_export_batch(bpy.types.Operator):
             return {'CANCELLED'}
 
         try:
-            count, bat_path = export_batch(context)
+            count, bat_path, dup_count = export_batch(context)
         except FileNotFoundError as e:
             self.report({'ERROR'}, str(e))
             return {'CANCELLED'}
 
         total = len(s.job_log_items)
+        dup_note = f"  (removed {dup_count} duplicate(s))" if dup_count else ""
         if s.export_mode == 'APPEND':
-            msg = f"Appended {count} job(s) — {total} total  [{bat_path}]"
+            msg = f"Appended {count} job(s) — {total} total{dup_note}  [{bat_path}]"
         else:
-            msg = f"Exported {count} job(s) to {bat_path}"
+            msg = f"Exported {count} job(s){dup_note} to {bat_path}"
         s.last_export_info = msg
         self.report({'INFO'}, msg)
         return {'FINISHED'}
