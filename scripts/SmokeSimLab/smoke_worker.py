@@ -14,7 +14,7 @@ Applies fluid parameters, bakes, renders playblast MP4 + final still PNG,
 appends a row to Renders/results.csv, then quits Blender.
 """
 
-WORKER_VERSION = "0.2.23"
+WORKER_VERSION = "0.2.25"
 
 import bpy
 import sys
@@ -84,6 +84,43 @@ def _append_perf_record(output_path, record):
             json.dump(records, fh, indent=2)
     except OSError as e:
         _log(f"  WARNING: could not write perf_log.json: {e}")
+
+
+# ---------------------------------------------------------------------------
+# Cache bake-time sidecar
+# ---------------------------------------------------------------------------
+# Stored at <cache_dir>/bake_time.json so the time travels with the cache.
+# Read on SKIP BAKE to show the original bake time in the rendered text
+# overlay instead of "Bake: 0 sec"; updated on FULL or RESUME bake so future
+# reuses can read it.  For RESUME we accumulate (prev + this run) since the
+# total time it took to produce the current cache is what's interesting.
+
+_BAKE_TIME_FILENAME = "bake_time.json"
+
+def _read_stored_bake_time(cache_dir):
+    """Return prior bake_seconds for this cache, or None if no sidecar."""
+    path = os.path.join(cache_dir, _BAKE_TIME_FILENAME)
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return float(json.load(fh)["bake_seconds"])
+    except (OSError, json.JSONDecodeError, KeyError, ValueError, TypeError):
+        return None
+
+
+def _write_stored_bake_time(cache_dir, bake_seconds, frames, resolution):
+    """Persist the cumulative bake_seconds for this cache as a sidecar."""
+    path = os.path.join(cache_dir, _BAKE_TIME_FILENAME)
+    record = {
+        "bake_seconds": round(float(bake_seconds), 2),
+        "frames":       int(frames),
+        "resolution":   int(resolution),
+        "timestamp":    datetime.datetime.now().isoformat(timespec="seconds"),
+    }
+    try:
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(record, fh, indent=2)
+    except OSError as e:
+        _log(f"  WARNING: could not write {_BAKE_TIME_FILENAME}: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -393,6 +430,14 @@ _log(f"[{name}] --- Cache search ---")
 _log(f"[{name}]   This job's cache dir : {cache_dir}")
 _log(f"[{name}]   use_existing_cache   : {use_existing_cache}")
 
+# Read the stored bake_time sidecar before any presave/rename touches the
+# directory.  Kept in a Python variable so it survives even when RESUME
+# discards _presave_dir (which doesn't move non-VDB files) or FULL BAKE
+# rmtree's it entirely.
+_prev_stored_bake = _read_stored_bake_time(cache_dir)
+if _prev_stored_bake is not None:
+    _log(f"[{name}]   Stored bake_time : {_prev_stored_bake:.1f}s (from prior bake)")
+
 effective_cache_dir = cache_dir
 
 def _count_data_files(directory):
@@ -561,7 +606,10 @@ bake_complete = all(f in baked_frames for f in range(frame_start, frame_end + 1)
 # Existing renders for these frames must NOT be reused as placeholders.
 rebaked_frames = set()
 
+_bake_decision = None   # set to "SKIP" / "RESUME" / "FULL" by the branch that fires
+
 if use_existing_cache and bake_complete:
+    _bake_decision = "SKIP"
     _log(f"[{name}]   Decision : SKIP BAKE — all {frame_end - frame_start + 1} frames confirmed")
     if _presave_active:
         # Restore the presaved cache so the render engine can read the VDB files.
@@ -591,6 +639,7 @@ if use_existing_cache and bake_complete:
     bake_skipped = True
 
 elif use_existing_cache and baked_frames:
+    _bake_decision = "RESUME"
     rebaked_frames = set(range(frame_start, frame_end + 1)) - baked_frames
     bake_skipped   = False
     _log(f"[{name}]   Decision : RESUME — {len(baked_frames)} frames present, "
@@ -634,6 +683,7 @@ elif use_existing_cache and baked_frames:
     _time.sleep(2.0)
 
 else:
+    _bake_decision = "FULL"
     rebaked_frames = set(range(frame_start, frame_end + 1))
     bake_skipped   = False
     if _presave_active:
@@ -665,10 +715,34 @@ if _post_bake_count == 0:
     sys.exit(1)
 
 # ---------------------------------------------------------------------------
+# Bake-time sidecar — keep the "this cache took N seconds to produce" record
+# ---------------------------------------------------------------------------
+# SKIP   : display the stored time so the rendered overlay doesn't read
+#          "Bake: 0 sec".  Nothing to write (we didn't bake).
+# RESUME : the cache now reflects (prior bake) + (this run), so we accumulate.
+# FULL   : fresh cache, write only this run's time.
+if _bake_decision == "SKIP":
+    display_bake_seconds = _prev_stored_bake   # may be None if no sidecar
+elif _bake_decision == "RESUME":
+    display_bake_seconds = (_prev_stored_bake or 0.0) + bake_seconds
+    _write_stored_bake_time(effective_cache_dir, display_bake_seconds,
+                            frame_end, int(p["resolution"]))
+else:   # FULL
+    display_bake_seconds = bake_seconds
+    _write_stored_bake_time(effective_cache_dir, display_bake_seconds,
+                            frame_end, int(p["resolution"]))
+
+if display_bake_seconds is not None:
+    _log(f"[{name}] Display bake_time: {display_bake_seconds:.1f}s "
+         f"(decision={_bake_decision})")
+else:
+    _log(f"[{name}] Display bake_time: (no sidecar yet — overlay will skip the time line)")
+
+# ---------------------------------------------------------------------------
 # Update text objects (after bake — includes bake time)
 # ---------------------------------------------------------------------------
 
-update_text_objects(text_map, p, bake_seconds=bake_seconds)
+update_text_objects(text_map, p, bake_seconds=display_bake_seconds)
 _log(f"[{name}] Text objects updated (post-bake).")
 
 # ---------------------------------------------------------------------------
