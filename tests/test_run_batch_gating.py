@@ -1,0 +1,108 @@
+"""Tests for Run Batch gating (TODO-25) and Render Simulation Result (TODO-26)."""
+import sys
+import os
+import re
+import types
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
+
+from SmokeSimLab import _batch_ready, _on_render_sim_result_update
+
+
+# ── TODO-25: Run Batch button enabled only when a runnable batch exists ───────
+
+class TestBatchReady:
+    def _make_batch(self, root, with_bat=True, job_indices=(0,)):
+        out = root / "out"; out.mkdir()
+        if with_bat:
+            (out / "run_smoke_batch.bat").write_text("@echo off")
+        jobs = out / "jobs"; jobs.mkdir()
+        for i in job_indices:
+            (jobs / f"job_{i:04d}.json").write_text("{}")
+        return str(out)
+
+    def test_ready_when_bat_and_jobs_present(self, tmp_path):
+        out = self._make_batch(tmp_path)
+        assert _batch_ready(out) is True
+
+    def test_not_ready_without_bat(self, tmp_path):
+        out = self._make_batch(tmp_path, with_bat=False)
+        assert _batch_ready(out) is False
+
+    def test_not_ready_without_jobs_dir(self, tmp_path):
+        out = tmp_path / "out"; out.mkdir()
+        (out / "run_smoke_batch.bat").write_text("@echo off")
+        assert _batch_ready(str(out)) is False
+
+    def test_not_ready_with_empty_jobs_dir(self, tmp_path):
+        out = self._make_batch(tmp_path, job_indices=())
+        assert _batch_ready(out) is False
+
+    def test_not_ready_when_only_non_job_files(self, tmp_path):
+        out = tmp_path / "out"; out.mkdir()
+        (out / "run_smoke_batch.bat").write_text("@echo off")
+        jobs = out / "jobs"; jobs.mkdir()
+        (jobs / "config.json").write_text("{}")     # not a job_NNNN.json
+        (jobs / "job_0000.log").write_text("log")
+        assert _batch_ready(str(out)) is False
+
+    def test_missing_output_path(self, tmp_path):
+        assert _batch_ready(str(tmp_path / "does_not_exist")) is False
+
+
+# ── TODO-26: bake-only mode clears "Display Results When Finished" ────────────
+
+class TestRenderSimResultUpdate:
+    def test_disabling_render_clears_show_results(self):
+        s = types.SimpleNamespace(render_simulation_result=False, show_results=True)
+        _on_render_sim_result_update(s, None)
+        assert s.show_results is False
+
+    def test_enabling_render_leaves_show_results_untouched(self):
+        s = types.SimpleNamespace(render_simulation_result=True, show_results=True)
+        _on_render_sim_result_update(s, None)
+        assert s.show_results is True
+
+
+# ── TODO-26: worker honours render_simulation_result with a safe default ──────
+
+class TestWorkerRenderGuard:
+    """The worker is a flat script importing bpy at module scope, so it can't be
+    imported; assert the guard exists in source instead (regression for the
+    bake-only skip and its backwards-compatible default)."""
+    def _worker_src(self):
+        path = os.path.join(os.path.dirname(__file__), "..",
+                            "scripts", "SmokeSimLab", "smoke_worker.py")
+        with open(path, encoding="utf-8") as fh:
+            return fh.read()
+
+    def test_reads_flag_with_default_true(self):
+        src = self._worker_src()
+        assert re.search(
+            r'render_simulation_result\s*=\s*cfg\.get\(\s*"render_simulation_result"\s*,\s*True\s*\)',
+            src,
+        )
+
+    def test_has_bake_only_skip_branch(self):
+        src = self._worker_src()
+        assert "if not render_simulation_result:" in src
+
+
+class TestWorkerBakeFrameRange:
+    """Regression: the worker must constrain the bake to the job's frame range.
+
+    bpy.ops.fluid.bake_all() bakes the domain's cache_frame_start/end, not the
+    scene range — so without setting them the worker baked the .blend's full
+    range (observed: 500 frames for a 1-20 job). Worker can't be imported, so
+    assert the assignment exists in source."""
+    def _worker_src(self):
+        path = os.path.join(os.path.dirname(__file__), "..",
+                            "scripts", "SmokeSimLab", "smoke_worker.py")
+        with open(path, encoding="utf-8") as fh:
+            return fh.read()
+
+    def test_sets_cache_frame_start_from_job(self):
+        assert re.search(r"d\.cache_frame_start\s*=\s*frame_start", self._worker_src())
+
+    def test_sets_cache_frame_end_from_job(self):
+        assert re.search(r"d\.cache_frame_end\s*=\s*frame_end", self._worker_src())

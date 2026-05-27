@@ -14,7 +14,7 @@ Applies fluid parameters, bakes, renders playblast MP4 + final still PNG,
 appends a row to Renders/results.csv, then quits Blender.
 """
 
-WORKER_VERSION = "0.2.33"
+WORKER_VERSION = "0.3.0"
 
 import bpy
 import sys
@@ -293,6 +293,9 @@ render_mode        = cfg.get("render_mode", "CYCLES")
 render_samples     = cfg.get("render_samples", 16)
 use_placeholders   = cfg.get("use_placeholders", False)
 use_existing_cache = cfg.get("use_existing_cache", False)
+# Bake-only mode (TODO-26): when False, skip the MP4 + still render entirely.
+# Defaults True so pre-TODO-26 job JSONs still render as before.
+render_simulation_result = cfg.get("render_simulation_result", True)
 
 # Emitter densities pre-computed at export time: {object_name: scaled_density}
 emitter_densities       = cfg.get("emitter_densities", {})
@@ -320,6 +323,7 @@ os.makedirs(render_dir, exist_ok=True)
 os.makedirs(cache_dir,  exist_ok=True)
 
 _log(f"[{name}] Job started.")
+_log(f"[{name}] Blender {bpy.app.version_string}")
 _dlog(f"cfg: {cfg}")
 _log(f"[{name}] Cache dir: {cache_dir}")
 _log(f"[{name}] Render dir: {render_dir}")
@@ -381,6 +385,17 @@ if p["use_noise"]:
     d.noise_scale     = int(p["noise_upres"])
     d.noise_strength  = float(p["noise_strength"])
     d.noise_pos_scale = float(p["noise_spatial_scale"])
+
+# Constrain the bake to this job's frame range.  bpy.ops.fluid.bake_all() bakes
+# the domain's cache_frame_start/end, NOT the scene frame range — so without
+# this the bake uses whatever range is saved in the .blend (e.g. 500 frames),
+# ignoring the job's requested range and wasting enormous bake time / cache.
+try:
+    d.cache_frame_start = frame_start
+    d.cache_frame_end   = frame_end
+    _log(f"[{name}] Cache frame range set to {frame_start}-{frame_end}")
+except (AttributeError, TypeError) as _e:
+    _log(f"[{name}] WARNING: could not set cache frame range ({_e})")
 
 # OpenVDB + Blosc: smaller files, faster reads, industry-standard format
 d.cache_data_format  = 'OPENVDB'
@@ -833,111 +848,118 @@ scene.frame_start = frame_start
 scene.frame_end   = frame_end
 
 # ---------------------------------------------------------------------------
-# Playblast — full animation
+# Render passes — animation MP4 + final still PNG.
+# Skipped entirely in bake-only mode (render_simulation_result = False, TODO-26):
+# validate the simulation cache now, render later by hand.  CSV + perf records
+# below still run so the job is recorded as complete.
 # ---------------------------------------------------------------------------
 
-mp4 = os.path.join(render_dir, name + ".mp4")
+frames_actually_rendered = 0
+render_seconds           = 0.0
 
-bpy.context.view_layer.update()
-
-# Always render a PNG sequence first, then convert with external ffmpeg.
-# This allows resuming after a crash and gives frame-level progress tracking.
-# Name is parameter-derived, so the frames dir is always the same for the
-# same parameter combination — no fuzzy cross-run search needed.
-png_sequence_dir     = os.path.join(render_dir, f"{name}_frames")
-effective_frames_dir = png_sequence_dir
-
-os.makedirs(effective_frames_dir, exist_ok=True)
-if render_mode == "EEVEE":
-    setup_eevee(scene)
+if not render_simulation_result:
+    _log(f"[{name}] Render Simulation Result disabled — bake-only run, "
+         f"skipping animation and still render.")
 else:
-    setup_cycles(scene, samples=render_samples)
-scene.render.image_settings.file_format = "PNG"
+    # ---- Playblast — full animation ----
+    mp4 = os.path.join(render_dir, name + ".mp4")
 
-# Check for existing frames if use_placeholders is enabled.
-# Frames in rebaked_frames are always re-rendered even if a PNG exists, because
-# the new bake may produce different smoke than the render that was previously made.
-frames_to_render = set(range(scene.frame_start, frame_end + 1))
-if use_placeholders:
-    existing_frames = set()
-    for frame_num in frames_to_render:
-        if frame_num in rebaked_frames:
-            continue  # cache was recomputed — must re-render
-        frame_file = os.path.join(effective_frames_dir, f"frame_{frame_num:04d}.png")
-        if os.path.exists(frame_file):
-            existing_frames.add(frame_num)
+    bpy.context.view_layer.update()
 
-    frames_to_render -= existing_frames
-    if existing_frames:
-        _log(f"[{name}] Found {len(existing_frames)} existing frame(s), skipping those")
-    if rebaked_frames and use_placeholders:
-        _log(f"[{name}] {len(rebaked_frames)} frame(s) were rebaked — re-rendering those regardless of placeholders")
-    if not frames_to_render:
-        _log(f"[{name}] All frames already exist, skipping animation render")
+    # Always render a PNG sequence first, then convert with external ffmpeg.
+    # This allows resuming after a crash and gives frame-level progress tracking.
+    # Name is parameter-derived, so the frames dir is always the same for the
+    # same parameter combination — no fuzzy cross-run search needed.
+    png_sequence_dir     = os.path.join(render_dir, f"{name}_frames")
+    effective_frames_dir = png_sequence_dir
 
-# Render frames individually to support partial resume
-frames_actually_rendered = len(frames_to_render)
-render_seconds = 0.0
-if frames_to_render:
-    _dlog(f"render start: engine={render_mode}  frames={len(frames_to_render)}  dir={effective_frames_dir!r}")
-    _log(f"[{name}] Rendering animation ({len(frames_to_render)} frame(s)) -> {effective_frames_dir}")
-    render_start = _time.time()
-    for frame_num in sorted(frames_to_render):
-        scene.frame_set(frame_num)
-        frame_file = os.path.join(effective_frames_dir, f"frame_{frame_num:04d}.png")
-        scene.render.filepath = frame_file
-        _render_result = bpy.ops.render.render(write_still=True)
-        if 'FINISHED' not in _render_result:
-            _log(f"[{name}] ERROR: Frame {frame_num} render did not finish (result: {_render_result})")
-            sys.exit(1)
-    render_seconds = _time.time() - render_start
-    _log(f"[{name}] Playblast frame sequence complete.")
-else:
-    _log(f"[{name}] No frames to render (all exist or skipped)")
-
-# Convert PNG sequence to MP4 using FFmpeg
-ffmpeg_cmd = [
-    "ffmpeg",
-    "-y",
-    "-framerate", str(scene.render.fps),
-    "-i", os.path.join(effective_frames_dir, "frame_%04d.png"),
-    "-c:v", "libx264",
-    "-pix_fmt", "yuv420p",
-    mp4
-]
-try:
-    subprocess.run(ffmpeg_cmd, check=True, capture_output=True)
-    _log(f"[{name}] MP4 conversion complete -> {mp4}")
-except subprocess.CalledProcessError as e:
-    _log(f"[{name}] FFmpeg conversion failed: {e.stderr.decode()}")
-except FileNotFoundError:
-    _log(f"[{name}] FFmpeg not found on system PATH. PNG frames saved to {png_sequence_dir}")
-
-# ---------------------------------------------------------------------------
-# Final still — last frame only
-# ---------------------------------------------------------------------------
-
-png = os.path.join(render_dir, name + ".png")
-
-if render_mode == "EEVEE":
-    # EEVEE — only works in windowed mode (no --background)
-    if not setup_eevee(scene):
+    os.makedirs(effective_frames_dir, exist_ok=True)
+    if render_mode == "EEVEE":
+        setup_eevee(scene)
+    else:
         setup_cycles(scene, samples=render_samples)
-else:
-    # Cycles GPU — default, works in background mode
-    setup_cycles(scene, samples=render_samples)
+    scene.render.image_settings.file_format = "PNG"
 
-# Must reset to PNG after FFMPEG playblast
-scene.render.image_settings.file_format = 'PNG'
+    # Check for existing frames if use_placeholders is enabled.
+    # Frames in rebaked_frames are always re-rendered even if a PNG exists, because
+    # the new bake may produce different smoke than the render that was previously made.
+    frames_to_render = set(range(scene.frame_start, frame_end + 1))
+    if use_placeholders:
+        existing_frames = set()
+        for frame_num in frames_to_render:
+            if frame_num in rebaked_frames:
+                continue  # cache was recomputed — must re-render
+            frame_file = os.path.join(effective_frames_dir, f"frame_{frame_num:04d}.png")
+            if os.path.exists(frame_file):
+                existing_frames.add(frame_num)
 
-scene.frame_set(frame_end)
-scene.render.filepath = png
-_log(f"[{name}] Rendering final frame ({scene.render.engine}) -> {png}")
-_render_result = bpy.ops.render.render(write_still=True)
-if 'FINISHED' not in _render_result:
-    _log(f"[{name}] ERROR: Still render did not finish (result: {_render_result})")
-    sys.exit(1)
-_log(f"[{name}] PNG render complete. File exists: {os.path.exists(png)}")
+        frames_to_render -= existing_frames
+        if existing_frames:
+            _log(f"[{name}] Found {len(existing_frames)} existing frame(s), skipping those")
+        if rebaked_frames and use_placeholders:
+            _log(f"[{name}] {len(rebaked_frames)} frame(s) were rebaked — re-rendering those regardless of placeholders")
+        if not frames_to_render:
+            _log(f"[{name}] All frames already exist, skipping animation render")
+
+    # Render frames individually to support partial resume
+    frames_actually_rendered = len(frames_to_render)
+    if frames_to_render:
+        _dlog(f"render start: engine={render_mode}  frames={len(frames_to_render)}  dir={effective_frames_dir!r}")
+        _log(f"[{name}] Rendering animation ({len(frames_to_render)} frame(s)) -> {effective_frames_dir}")
+        render_start = _time.time()
+        for frame_num in sorted(frames_to_render):
+            scene.frame_set(frame_num)
+            frame_file = os.path.join(effective_frames_dir, f"frame_{frame_num:04d}.png")
+            scene.render.filepath = frame_file
+            _render_result = bpy.ops.render.render(write_still=True)
+            if 'FINISHED' not in _render_result:
+                _log(f"[{name}] ERROR: Frame {frame_num} render did not finish (result: {_render_result})")
+                sys.exit(1)
+        render_seconds = _time.time() - render_start
+        _log(f"[{name}] Playblast frame sequence complete.")
+    else:
+        _log(f"[{name}] No frames to render (all exist or skipped)")
+
+    # Convert PNG sequence to MP4 using FFmpeg
+    ffmpeg_cmd = [
+        "ffmpeg",
+        "-y",
+        "-framerate", str(scene.render.fps),
+        "-i", os.path.join(effective_frames_dir, "frame_%04d.png"),
+        "-c:v", "libx264",
+        "-pix_fmt", "yuv420p",
+        mp4
+    ]
+    try:
+        subprocess.run(ffmpeg_cmd, check=True, capture_output=True)
+        _log(f"[{name}] MP4 conversion complete -> {mp4}")
+    except subprocess.CalledProcessError as e:
+        _log(f"[{name}] FFmpeg conversion failed: {e.stderr.decode()}")
+    except FileNotFoundError:
+        _log(f"[{name}] FFmpeg not found on system PATH. PNG frames saved to {png_sequence_dir}")
+
+    # ---- Final still — last frame only ----
+    png = os.path.join(render_dir, name + ".png")
+
+    if render_mode == "EEVEE":
+        # EEVEE — only works in windowed mode (no --background)
+        if not setup_eevee(scene):
+            setup_cycles(scene, samples=render_samples)
+    else:
+        # Cycles GPU — default, works in background mode
+        setup_cycles(scene, samples=render_samples)
+
+    # Must reset to PNG after FFMPEG playblast
+    scene.render.image_settings.file_format = 'PNG'
+
+    scene.frame_set(frame_end)
+    scene.render.filepath = png
+    _log(f"[{name}] Rendering final frame ({scene.render.engine}) -> {png}")
+    _render_result = bpy.ops.render.render(write_still=True)
+    if 'FINISHED' not in _render_result:
+        _log(f"[{name}] ERROR: Still render did not finish (result: {_render_result})")
+        sys.exit(1)
+    _log(f"[{name}] PNG render complete. File exists: {os.path.exists(png)}")
 
 # ---------------------------------------------------------------------------
 # CSV — append one row per job, including dissolve/noise enabled flags

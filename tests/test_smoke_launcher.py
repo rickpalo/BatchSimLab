@@ -534,3 +534,61 @@ class TestBug004FallbackBakeLogic:
         cache = tmp_path / "cache"
         cache.mkdir()
         assert count_data_files(str(cache)) == 0
+
+
+# ---------------------------------------------------------------------------
+# TODO-22 — crash-timing diagnostics (time-to-exit per job)
+# ---------------------------------------------------------------------------
+
+class TestCrashTimingDiagnostics:
+    """The launcher must log time-to-exit (and the post-exit WerFault poll
+    duration) so the crash-timing inconsistency can be characterised from real
+    runs.  This is runtime-only behaviour around subprocess.Popen, so assert the
+    instrumentation is present in source rather than driving a live Blender."""
+
+    def _launcher_src(self):
+        with open(os.path.join(_SCRIPTS_DIR, "smoke_launcher.py"), encoding="utf-8") as fh:
+            return fh.read()
+
+    def test_records_time_to_exit(self):
+        src = self._launcher_src()
+        assert "_time_to_exit = time.time() - _launch_time" in src
+        assert "time_to_exit=" in src
+
+    def test_records_werfault_poll_duration_on_crash(self):
+        src = self._launcher_src()
+        assert "_werfault_poll_secs" in src
+        assert "werfault_poll" in src
+
+    def test_exit_diagnostic_persisted_via_dlog(self):
+        # The per-job .log is owned by the worker; the launcher's exit
+        # diagnostic must go through _dlog so it lands in debug_log.txt.
+        src = self._launcher_src()
+        assert '_dlog(f"exit: pid=' in src
+
+
+class TestCrashLogBlenderVersion:
+    """crash_log.txt must record the Blender version even when no crash dump is
+    captured (the common case lately), since the crash root cause is
+    version-specific."""
+
+    def test_blender_version_handles_missing_exe(self):
+        from smoke_launcher import _blender_version
+        import smoke_launcher
+        smoke_launcher._blender_version_cache = None   # reset cache
+        # A non-existent exe must not raise — returns None and caches the attempt.
+        assert _blender_version(r"X:\nope\blender.exe") is None
+        smoke_launcher._blender_version_cache = None
+
+    def test_blender_version_none_exe(self):
+        from smoke_launcher import _blender_version
+        import smoke_launcher
+        smoke_launcher._blender_version_cache = None
+        assert _blender_version(None) is None
+        smoke_launcher._blender_version_cache = None
+
+    def test_crash_header_writes_blender_line(self):
+        with open(os.path.join(_SCRIPTS_DIR, "smoke_launcher.py"), encoding="utf-8") as fh:
+            src = fh.read()
+        assert 'fh.write(f"Blender: {_bl_ver or' in src
+        assert "def _save_crash_log(jobs_dir, job_stem, launch_time=None, blender_exe=None)" in src

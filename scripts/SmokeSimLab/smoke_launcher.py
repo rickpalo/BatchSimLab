@@ -30,7 +30,7 @@ Behaviour
 No third-party dependencies — stdlib + tasklist.exe (built into Windows).
 """
 
-LAUNCHER_VERSION = "0.2.33"
+LAUNCHER_VERSION = "0.3.0"
 
 import atexit
 import ctypes
@@ -47,6 +47,8 @@ _STALE_LOG_TIMEOUT       = 1800  # seconds of log inactivity (after first write)
 _WALL_CLOCK_TIMEOUT      = 14400 # 4-hour absolute per-job ceiling regardless of log activity
 _POST_EXIT_WERFAULT_SECS = 30    # seconds to keep checking for WerFault after exit
 _CRASH_DUMP_GRACE_SECS   = 15    # seconds to wait for blender.crash.txt to appear after a crash
+
+_blender_version_cache = None    # populated lazily on the first crash log
 
 
 # ---------------------------------------------------------------------------
@@ -192,7 +194,33 @@ def _write_crashed_marker(jobs_dir, job_stem):
         pass
 
 
-def _save_crash_log(jobs_dir, job_stem, launch_time=None):
+def _blender_version(blender_exe):
+    """Return the Blender version string (e.g. "Blender 5.1.1"), or None.
+
+    Runs `blender --version` once and caches the result.  Only invoked when a
+    crash is being logged, so the extra process launch costs nothing on the
+    happy path.  The crash root cause has been version-specific (Blender 5.1.1
+    glTF/numpy import), so recording the version makes dumpless crash entries
+    far more useful.
+    """
+    global _blender_version_cache
+    if _blender_version_cache is not None:
+        return _blender_version_cache or None
+    _blender_version_cache = ""   # mark as attempted so we don't retry on every crash
+    if not blender_exe:
+        return None
+    try:
+        out = subprocess.run([blender_exe, "--version"],
+                             capture_output=True, text=True, timeout=30)
+        first = (out.stdout or "").strip().splitlines()
+        if first:
+            _blender_version_cache = first[0].strip()
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return _blender_version_cache or None
+
+
+def _save_crash_log(jobs_dir, job_stem, launch_time=None, blender_exe=None):
     """Append blender.crash.txt to <output_path>/crash_log.txt with a dated header.
 
     Waits up to _CRASH_DUMP_GRACE_SECS for blender.crash.txt to either
@@ -239,9 +267,11 @@ def _save_crash_log(jobs_dir, job_stem, launch_time=None):
         print(f"[smoke_launcher] No blender.crash.txt after {_CRASH_DUMP_GRACE_SECS}s wait "
               f"(SEH handler may have been pre-empted by Job Object termination)")
 
+    _bl_ver = _blender_version(blender_exe)
     try:
         with open(dest, "a", encoding="utf-8") as fh:
             fh.write(f"\n=== {ts}  {job_stem} ===\n")
+            fh.write(f"Blender: {_bl_ver or 'unknown'}  (launcher {LAUNCHER_VERSION})\n")
             if _dump_present:
                 try:
                     with open(crash_src, "r", encoding="utf-8", errors="replace") as cf:
@@ -381,7 +411,7 @@ def main():
                   f"threshold={_WALL_CLOCK_TIMEOUT}s")
             print(f"[smoke_launcher] Job {job_stem} exceeded "
                   f"{_WALL_CLOCK_TIMEOUT // 3600}h wall-clock limit — killing")
-            _save_crash_log(jobs_dir, job_stem, _launch_time)
+            _save_crash_log(jobs_dir, job_stem, _launch_time, blender_exe)
             _kill_pid(blender_pid, "Blender (wall-clock)")
             proc.wait()
             _write_crashed_marker(jobs_dir, job_stem)
@@ -401,7 +431,7 @@ def main():
                           f"threshold={_STARTUP_TIMEOUT}s")
                     print(f"[smoke_launcher] No log created in {int(_elapsed)}s "
                           f"— killing stuck job {job_stem}")
-                    _save_crash_log(jobs_dir, job_stem, _launch_time)
+                    _save_crash_log(jobs_dir, job_stem, _launch_time, blender_exe)
                     _kill_pid(blender_pid, "Blender (startup timeout)")
                     proc.wait()
                     _write_crashed_marker(jobs_dir, job_stem)
@@ -418,7 +448,7 @@ def main():
                               f"threshold={_STALE_LOG_TIMEOUT}s")
                         print(f"[smoke_launcher] No log activity for "
                               f"{int(idle_secs)}s — killing stuck job {job_stem}")
-                        _save_crash_log(jobs_dir, job_stem, _launch_time)
+                        _save_crash_log(jobs_dir, job_stem, _launch_time, blender_exe)
                         _kill_pid(blender_pid, "Blender (stale)")
                         proc.wait()
                         _write_crashed_marker(jobs_dir, job_stem)
@@ -428,7 +458,7 @@ def main():
         wer_pid = _find_werfault_for_pid(blender_pid)
         if wer_pid is not None:
             print(f"[smoke_launcher] WerFault PID {wer_pid} detected — killing")
-            _save_crash_log(jobs_dir, job_stem, _launch_time)
+            _save_crash_log(jobs_dir, job_stem, _launch_time, blender_exe)
             _kill_pid(wer_pid, "WerFault")
             _kill_pid(blender_pid, "Blender")
             proc.wait()
@@ -438,19 +468,29 @@ def main():
 
         time.sleep(_POLL_INTERVAL)
 
-    exit_code = proc.returncode
+    exit_code     = proc.returncode
+    _time_to_exit = time.time() - _launch_time
+    # TODO-22 diagnostic: record pid / exit code / time-to-exit for every job so
+    # the crash-timing inconsistency can be characterised from real runs (one
+    # production crash stalled ~5 min, another moved on instantly).  Routed
+    # through _dlog so it persists to debug_log.txt (the per-job .log is owned by
+    # the worker; the launcher only writes the console + debug_log.txt).
+    _dlog(f"exit: pid={blender_pid}  exit_code={exit_code}  "
+          f"time_to_exit={_time_to_exit:.1f}s")
+
     if exit_code != 0:
-        # TODO (v0.2.26): Crash timing inconsistency observed in production — one crash
-        # stalled ~5 minutes before the batch moved on; a second crash in the same batch
-        # moved on almost immediately.  Possible causes: (a) WerFault appeared but
-        # _find_werfault_for_pid missed it (process-tree mismatch or timing gap between
-        # exit and WerFault spawn), leaving Blender's process lingering; (b) Blender
-        # hung for several minutes before actually exiting with a non-zero code.
-        # Investigate: log proc.pid / exit_code / time-to-exit on each crash, and check
-        # whether _POST_EXIT_WERFAULT_SECS (currently 30 s) should be extended or whether
-        # a shorter _STALE_LOG_TIMEOUT is needed for the hung-process case.
+        # TODO-22 (v0.2.26): Crash timing inconsistency observed in production — one
+        # crash stalled ~5 minutes before the batch moved on; a second crash in the
+        # same batch moved on almost immediately.  Possible causes: (a) WerFault
+        # appeared but _find_werfault_for_pid missed it (process-tree mismatch or
+        # timing gap between exit and WerFault spawn), leaving Blender lingering;
+        # (b) Blender hung for several minutes before exiting non-zero.
+        # time_to_exit above + werfault_poll_secs below now capture the data needed
+        # to tell these apart; revisit whether _POST_EXIT_WERFAULT_SECS (30 s) or
+        # _STALE_LOG_TIMEOUT need tuning once a stalled crash is logged.
         # Poll for WerFault for up to _POST_EXIT_WERFAULT_SECS.
-        _deadline = time.time() + _POST_EXIT_WERFAULT_SECS
+        _wer_poll_start = time.time()
+        _deadline = _wer_poll_start + _POST_EXIT_WERFAULT_SECS
         while time.time() < _deadline:
             wer_pid = _find_werfault_for_pid(blender_pid)
             if wer_pid is not None:
@@ -458,10 +498,14 @@ def main():
                 _kill_pid(wer_pid, "WerFault")
                 break
             time.sleep(1.0)
-        _save_crash_log(jobs_dir, job_stem, _launch_time)
+        _werfault_poll_secs = time.time() - _wer_poll_start
+        _save_crash_log(jobs_dir, job_stem, _launch_time, blender_exe)
         _write_crashed_marker(jobs_dir, job_stem)
-        _dlog(f"exit: CRASHED  exit_code={exit_code}")
-        print(f"[smoke_launcher] Job {job_stem} CRASHED (exit {exit_code})")
+        _dlog(f"exit: CRASHED  exit_code={exit_code}  "
+              f"time_to_exit={_time_to_exit:.1f}s  "
+              f"werfault_poll_secs={_werfault_poll_secs:.1f}s")
+        print(f"[smoke_launcher] Job {job_stem} CRASHED (exit {exit_code}, "
+              f"werfault_poll={_werfault_poll_secs:.1f}s)")
         sys.exit(1)
 
     # Exit code 0: verify the worker wrote its completion sentinel.
@@ -482,7 +526,7 @@ def main():
                     _dlog(f"blender_stderr contains Python traceback for this job")
             except OSError:
                 pass
-        _save_crash_log(jobs_dir, job_stem, _launch_time)
+        _save_crash_log(jobs_dir, job_stem, _launch_time, blender_exe)
         _write_crashed_marker(jobs_dir, job_stem)
         _dlog(f"exit: CRASHED (exit_code=0)  reason={_crash_reason}")
         print(f"[smoke_launcher] Job {job_stem} CRASHED (exit 0 — {_crash_reason})")

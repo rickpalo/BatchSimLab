@@ -4,7 +4,77 @@ Items to address once file synchronization catches up (~5,000 PNGs behind as of 
 
 ---
 
-## TODO-28: Append mode overwrites run_smoke_batch.bat instead of extending it
+## TODO-29: Warn on Run Batch when rendering is on but the scene has no camera
+
+**Filed 2026-05-27 (test run feedback).** If the scene has no camera and
+**Render Simulation Result** is enabled, the renders will be black / fail. On
+Run Batch, warn the user and let them cancel.
+
+**Design note (important):** `render_simulation_result` is baked into each
+`job_NNNN.json` at **Export** time, not Run time. So a Run-Batch warning can
+offer "Cancel" but cannot truly "disable renders" for the existing batch without
+re-exporting. Two clean options:
+- (A) Do the camera check at **Export** time: if no camera + render on, warn and
+  offer to export as bake-only (`render_simulation_result=False`). Simple,
+  correct, but not where the user asked.
+- (B) Do it at **Run Batch**: a dialog with "Cancel" + a checkbox "I added a
+  camera / run anyway". Choosing cancel can also flip the panel's
+  `render_simulation_result` off so a re-export is bake-only.
+- Recommended: **both** — a cheap `_scene_has_camera(scene)` helper used at
+  Export (offer bake-only) and a Run-Batch guard (offer cancel).
+
+**Files:** `__init__.py` — `SMOKE_OT_run_batch.invoke/draw`, `SMOKE_OT_export_batch`,
+a `_scene_has_camera` helper. **Tests:** `_scene_has_camera` unit test.
+
+---
+
+## TODO-30: Allow renaming a job in the Job Log (double-click / F2)
+
+**Filed 2026-05-27 (test run feedback).** Let the user rename a job in the Job
+Log list, only while no batch is running (before or after a run).
+
+**Answer to "will renaming reset the sim / change the cache dir?": YES — it is
+not a cosmetic label.** The job `name` *is* the directory name everywhere:
+`Cache/<name>/`, `Renders/<name>_frames/`, `Renders/<name>.mp4`, `<name>.png`,
+the `name` column in `results.csv`, and the `d.cache_directory` Mantaflow bakes
+into. Renaming therefore implies, while no job runs:
+1. Rename on disk: `Cache/<old>` → `Cache/<new>`, `Renders/<old>_frames` →
+   `<new>_frames`, and the `<old>.mp4` / `<old>.png` files. Otherwise the next
+   run bakes fresh into `Cache/<new>` (i.e. it *does* reset the sim) and the old
+   artifacts orphan.
+2. Update the job's JSON `name`, `_job_log_rows`, and `job_log_items[idx]`.
+3. `results.csv` already-written rows still hold the old name (leave or rewrite?).
+
+**Design tension with BUG-005:** names are **parameter-derived** (`make_name`)
+so "same params → same dirs" holds. A manual name will NOT survive a re-export
+(export regenerates the parameter-derived name) and breaks dedup/reuse for
+identical params. So a manual rename is inherently fragile.
+
+**Decision needed before implementing:** (a) full rename that moves all artifacts
+on disk (most work, "does the right thing"), or (b) a display-only label stored
+separately from the parameter-derived dir name (keeps BUG-005 invariant; dirs
+keep the param name; only the Job Log shows the friendly label).
+
+**Files:** `__init__.py` — `SMOKE_UL_job_log` (rename op), `make_name` coupling,
+`export_batch`, `_job_log_rows`. **Tests:** rename helper + artifact-move helper.
+
+---
+
+## TODO-28: Append mode overwrites run_smoke_batch.bat instead of extending it — **DONE** (v0.3.0)
+
+**Resolution (v0.3.0):**
+- `_existing_jobs_for_bat(jobs_dir, job_start_index)` reads each prior
+  `job_NNNN.json` (name + render_mode) for indices below the append start.
+- `export_batch` now re-lists those existing jobs in the .bat (via the shared
+  `_job_run_cmd` / `_job_bat_block` helpers) *before* the newly appended ones,
+  so rewriting the .bat in "w" mode no longer drops them.  Re-listed jobs are
+  cheap on a second run (SKIP BAKE / placeholders).
+- Safeguard: the Export/Append toggle and the Export Batch + Run Batch buttons
+  are disabled while a batch is running (`_batch_is_running()` in
+  `SMOKE_PT_panel.draw`) — the running cmd.exe already parsed the .bat, so
+  editing it mid-run can't help and only invites confusion.
+- Tests: `tests/test_export_append.py` — `TestExistingJobsForBat`,
+  `TestJobRunCmd`, `TestJobBatBlock`.
 
 **Observed (2026-05-27 ClaudeTest run):** User exported job_0000 (250 frames),
 clicked Run Batch, then while it was running appended job_0001 (500 frames)
@@ -112,7 +182,20 @@ dumps will confirm whether new crash signatures match the same root cause.
 
 ---
 
-## TODO-26: "Render Simulation Result" checkbox to skip rendering entirely
+## TODO-26: "Render Simulation Result" checkbox to skip rendering entirely — **DONE** (v0.3.0)
+
+**Resolution (v0.3.0):**
+- `SmokeSettings.render_simulation_result` BoolProperty (default `True`), with an
+  update callback `_on_render_sim_result_update` that clears `show_results` when
+  rendering is turned off (avoids a meaningless "display results" in bake-only).
+- Panel: checkbox below "Automatically Retry Failed Jobs"; Render Engine + Samples
+  row and the "Display Results When Finished" row are greyed out when it is off.
+- `export_batch` writes `render_simulation_result` into each `job_NNNN.json`.
+- `smoke_worker.py` reads the flag (default `True` for pre-TODO-26 JSONs) and
+  skips the whole MP4 + still render block when `False`; results.csv and
+  perf_log records still run so the job is recorded as complete.
+- Tests: `tests/test_run_batch_gating.py` — `TestRenderSimResultUpdate`,
+  `TestWorkerRenderGuard`.
 
 **Goal:** Allow users to run a bake-only batch (no MP4 / PNG render) for cases
 where they want to validate the simulation cache before committing render time,
@@ -156,7 +239,17 @@ confirms the Render Engine / Samples / Display Results controls become disabled.
 
 ---
 
-## TODO-25: Run Batch button should be disabled until there are jobs to run
+## TODO-25: Run Batch button should be disabled until there are jobs to run — **DONE** (v0.3.0)
+
+**Resolution (v0.3.0):**
+- `_batch_ready(output_path)` returns True only when both `run_smoke_batch.bat`
+  and at least one `job_NNNN.json` exist.  Computed on the fly in
+  `SMOKE_PT_panel.draw` (no `batch_ready` property to keep in sync), so it is
+  correct after Export, Remove All Jobs, reset, or reopening a session with
+  jobs already on disk.
+- Run Batch is gated with `_batch_ready(...) and not _batch_is_running()`.
+- "Monitor Existing Jobs" is also greyed out when the jobs folder has no JSONs.
+- Tests: `tests/test_run_batch_gating.py` — `TestBatchReady`.
 
 **Observed:** The "Run Batch" button is always enabled, even when no jobs have
 been exported yet.  Clicking it in that state launches `run_smoke_batch.bat`
@@ -184,7 +277,17 @@ run.  Enable it in either of these cases:
 
 ---
 
-## TODO-22: Crash timing inconsistency — one crash stalled ~5 min, another moved immediately
+## TODO-22: Crash timing inconsistency — one crash stalled ~5 min, another moved immediately — **INSTRUMENTED** (v0.3.0)
+
+**v0.3.0 (diagnostics):** The launcher now logs `pid`, `exit_code`, and
+`time_to_exit` for *every* job (printed to the per-job .log, not just debug
+mode), plus `werfault_poll_secs` on a crash.  These distinguish the two
+candidate causes: a large `time_to_exit` with small `werfault_poll_secs` means
+Blender genuinely ran/hung that long; a small `time_to_exit` with a large
+`werfault_poll_secs` means the stall was the post-exit WerFault poll.  **Root
+cause still unconfirmed — revisit once a stalled crash is captured with this
+data**, then decide whether `_POST_EXIT_WERFAULT_SECS`/`_STALE_LOG_TIMEOUT`
+need tuning.
 
 **Observed (v0.2.26 batch):** Two crashes in the same batch behaved differently.
 The first crash stalled for roughly 5 minutes before the launcher moved on; the

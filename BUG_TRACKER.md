@@ -624,5 +624,43 @@ None — requires Blender runtime.
 
 ---
 
+## BUG-011: Bake Ignores Job Frame Range (Bakes Whole .blend Range)
+
+**Status:** `DEPLOYED / UNVERIFIED` (v0.3.0)
+**Files:** `smoke_worker.py` — parameter-application block
+
+### Symptoms
+A job configured for frames 1–20 baked **500** frames. From a v0.3.0 test run
+(`TestPlan001/SessionA/jobs/job_0000.log`): the worker logged
+`Frame range needed : 1–20 (20 frames)` at the bake decision, then
+`Cache data files found: 500` after baking. The bake progress bar showed
+"XX of 20" while the count climbed to 500. Every job over-baked by ~25×,
+wasting bake time and cache space.
+
+### Root Cause
+`bpy.ops.fluid.bake_all()` bakes the **domain's** `cache_frame_start` /
+`cache_frame_end`, *not* the scene frame range. The worker set
+`scene.frame_start/end` (so the cache *decision* and the *render* used 1–20) but
+never set the domain's cache frame range, so Mantaflow baked whatever was saved
+in the .blend (500).
+
+### Fix (v0.3.0)
+In the parameter-application block, set
+`d.cache_frame_start = frame_start` and `d.cache_frame_end = frame_end`
+(wrapped in try/except for older API), before any bake decision or bake. Applies
+to all three bake paths (FULL / RESUME / SKIP). Also added a startup
+`Blender <version>` log line.
+
+### Tests Added
+`tests/test_run_batch_gating.py::TestWorkerBakeFrameRange` — source-level
+assertions that the worker sets cache_frame_start/end from the job range
+(worker can't be imported — it's a Blender script).
+
+### Verification
+Re-run a short batch (e.g. frames 1–20) and confirm `Cache data files found`
+equals the requested frame count, and the bake bar reads "N of 20".
+
+---
+
 *Document created 2026-05-11.  Append new attempts to existing issues rather than
 creating duplicate entries.*

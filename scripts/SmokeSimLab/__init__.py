@@ -43,7 +43,7 @@ Requires Blender 4.x (tested on 4.5.5 and 5.1.1) on Windows 10/11.  May work on 
 bl_info = {
     "name":        "SmokeSimLab",
     "author":      "Rick Palo",
-    "version":     (0, 2, 33),
+    "version":     (0, 3, 0),
     "blender":     (4, 0, 0),
     "location":    "View3D > Sidebar > SmokeLab",
     "description": "Batch smoke simulation parameter sweeper with CSV logging",
@@ -71,8 +71,8 @@ DOCS_URL = "https://github.com/rickpalo/SmokeSimLab"
 # Expected version strings in the helper files exported to the output folder.
 # When Run Batch detects a mismatch it warns the user to re-run Export Batch.
 # Keep these in sync with WORKER_VERSION / LAUNCHER_VERSION in those files.
-_EXPECTED_WORKER_VERSION   = "0.2.33"
-_EXPECTED_LAUNCHER_VERSION = "0.2.33"
+_EXPECTED_WORKER_VERSION   = "0.3.0"
+_EXPECTED_LAUNCHER_VERSION = "0.3.0"
 
 
 def _read_helper_version(path: str, var_name: str) -> str:
@@ -325,6 +325,18 @@ def _on_settings_enum_update(self, _context):
     if path == self.settings_file_path:
         return
     _load_settings_from_path(self, path)
+
+
+def _on_render_sim_result_update(self, _context):
+    """Update callback for render_simulation_result (TODO-26).
+
+    A bake-only run produces no renders, so "Display Results When Finished" has
+    nothing to display — clear it when rendering is turned off.  Writing the
+    property here (rather than in draw()) keeps the value mutation out of the
+    draw pass, where RNA writes are unsafe.
+    """
+    if not self.render_simulation_result:
+        self.show_results = False
 
 
 # ---------------------------------------------------------------------------
@@ -686,6 +698,112 @@ def _find_next_job_index(jobs_dir):
     return max(indices) + 1 if indices else 0
 
 
+def _existing_jobs_for_bat(jobs_dir, job_start_index):
+    """Return [(index, name, render_mode), ...] for already-exported jobs.
+
+    Used in APPEND mode (TODO-28): the regenerated run_smoke_batch.bat must
+    re-list every previously-exported job (indices < job_start_index) ahead of
+    the newly appended ones, otherwise re-writing the .bat in "w" mode drops
+    them and Run Batch silently skips all earlier jobs.  Re-listed jobs are
+    cheap on a second run — they SKIP BAKE / reuse placeholders.
+
+    Reads name and render_mode from each job_NNNN.json; falls back to sane
+    defaults if a file is missing fields or cannot be parsed.  Sorted by index.
+    """
+    result = []
+    if not os.path.isdir(jobs_dir):
+        return result
+    for f in os.listdir(jobs_dir):
+        m = re.match(r'^job_(\d{4})\.json$', f)
+        if not m:
+            continue
+        idx = int(m.group(1))
+        if idx >= job_start_index:
+            continue
+        try:
+            with open(os.path.join(jobs_dir, f), encoding="utf-8") as fh:
+                data = json.load(fh)
+        except (OSError, ValueError):
+            data = {}
+        result.append((idx,
+                       data.get("name", f"job_{idx:04d}"),
+                       data.get("render_mode", "CYCLES")))
+    result.sort(key=lambda t: t[0])
+    return result
+
+
+def _job_run_cmd(python_exe, dest_launcher, dest_worker, blender_exe,
+                 blend_file, job_path, render_mode, launcher_exists):
+    """Return the command line that runs a single job inside run_smoke_batch.bat.
+
+    Prefers smoke_launcher.py (crash detection + logging); falls back to calling
+    Blender directly when the launcher was not exported.  The launcher reads all
+    job details from job_path, so the same command form works for both newly
+    exported and previously exported (re-listed) jobs.
+    """
+    if launcher_exists:
+        return f'"{python_exe}" "{dest_launcher}" "{blender_exe}" "{job_path}"'
+    if render_mode == "EEVEE":
+        return (
+            f'"{blender_exe}" "{blend_file}" '
+            f'--window-geometry 0 0 100 100 --factory-startup '
+            f'--python "{dest_worker}" -- "{job_path}"'
+        )
+    return (
+        f'"{blender_exe}" "{blend_file}" '
+        f'--background --factory-startup '
+        f'--python "{dest_worker}" -- "{job_path}" 2>nul'
+    )
+
+
+def _job_bat_block(job_num, total_jobs, name, run_cmd, done_path):
+    """Return the run_smoke_batch.bat lines for a single job.
+
+    job_num is 1-based (what the echo shows the user).  The block runs the job,
+    then writes a .done sentinel recording success or the error exit code so the
+    addon's poll timer can mark the row COMPLETE / FAILED.
+    """
+    return [
+        f"echo === Job {job_num}/{total_jobs}: {name} ===",
+        run_cmd,
+        "if errorlevel 1 (",
+        "    echo   WARNING: job exited with error",
+        "    set /a ERRORS+=1",
+        f'    echo error exit !ERRORLEVEL! {name} %DATE% %TIME%>"{done_path}"',
+        ") else (",
+        f'    echo done {name} %DATE% %TIME%>"{done_path}"',
+        ")",
+        "echo.",
+    ]
+
+
+def _batch_ready(output_path):
+    """True if a runnable batch exists on disk (TODO-25).
+
+    Requires both run_smoke_batch.bat and at least one job_NNNN.json so the Run
+    Batch button is only enabled when there is actually something to run —
+    whether jobs were just exported or left over from a previous session.
+    """
+    bat = os.path.join(output_path, "run_smoke_batch.bat")
+    jobs_dir = os.path.join(output_path, "jobs")
+    if not os.path.isfile(bat) or not os.path.isdir(jobs_dir):
+        return False
+    return any(re.match(r'^job_\d{4}\.json$', f) for f in os.listdir(jobs_dir))
+
+
+def _batch_is_running():
+    """True while a batch poll timer is active (a Run Batch is in progress).
+
+    Used to disable Export/Append and Run Batch mid-run: the running cmd.exe has
+    already parsed run_smoke_batch.bat into memory, so editing it would not
+    affect the active batch and only invites the TODO-28 confusion.
+    """
+    try:
+        return bpy.app.timers.is_registered(_poll_batch_progress)
+    except Exception:
+        return False
+
+
 def export_batch(context):
     """
     Prepare all batch job files and write the Windows .bat launcher.
@@ -784,6 +902,7 @@ def export_batch(context):
     shutil.copy2(src_worker, dest_worker)
     if os.path.exists(src_launcher):
         shutil.copy2(src_launcher, dest_launcher)
+    _launcher_exists = os.path.exists(dest_launcher)
 
     # ── Write .bat header ────────────────────────────────────────────────────
     total_jobs = job_start_index + len(jobs)
@@ -826,6 +945,19 @@ def export_batch(context):
         _log_row.status     = 'NOT_STARTED'
         _job_log_rows.append((i + 1, make_name(p)))
 
+    # ── Re-list previously exported jobs (APPEND mode, TODO-28) ──────────────
+    # The .bat is rewritten in "w" mode below; without re-listing the earlier
+    # jobs here they would be dropped from the launcher and Run Batch would skip
+    # them.  Re-listed jobs are cheap on a second run (SKIP BAKE / placeholders).
+    if is_append:
+        for _idx, _name, _rmode in _existing_jobs_for_bat(jobs_dir, job_start_index):
+            _jp = os.path.join(jobs_dir, f"job_{_idx:04d}.json")
+            _dp = os.path.join(jobs_dir, f"job_{_idx:04d}.done")
+            _cmd = _job_run_cmd(python_exe, dest_launcher, dest_worker,
+                                blender_exe, blend_file, _jp, _rmode,
+                                _launcher_exists)
+            bat_lines += _job_bat_block(_idx + 1, total_jobs, _name, _cmd, _dp)
+
     # ── Write one JSON + one .bat entry per job ──────────────────────────────
     for i_offset, p in enumerate(jobs):
         i         = job_start_index + i_offset
@@ -844,6 +976,7 @@ def export_batch(context):
             "frame_end":      frame_end,
             "render_mode":    s.render_mode,
             "render_samples": s.render_samples,
+            "render_simulation_result": s.render_simulation_result,
             "render_resolution_x": context.scene.render.resolution_x,
             "render_resolution_y": context.scene.render.resolution_y,
             "use_placeholders": s.use_placeholders,
@@ -872,33 +1005,10 @@ def export_batch(context):
         # smoke_launcher.py wraps Blender, detects crash dialogs (WerFault),
         # saves crash logs, and exits non-zero so the batch marks the job failed.
         # Falls back to calling Blender directly if the launcher was not exported.
-        if os.path.exists(dest_launcher):
-            run_cmd = f'"{python_exe}" "{dest_launcher}" "{blender_exe}" "{job_path}"'
-        elif s.render_mode == "EEVEE":
-            run_cmd = (
-                f'"{blender_exe}" "{blend_file}" '
-                f'--window-geometry 0 0 100 100 --factory-startup '
-                f'--python "{dest_worker}" -- "{job_path}"'
-            )
-        else:
-            run_cmd = (
-                f'"{blender_exe}" "{blend_file}" '
-                f'--background --factory-startup '
-                f'--python "{dest_worker}" -- "{job_path}" 2>nul'
-            )
-
-        bat_lines += [
-            f"echo === Job {i+1}/{total_jobs}: {name} ===",
-            run_cmd,
-            "if errorlevel 1 (",
-            "    echo   WARNING: job exited with error",
-            "    set /a ERRORS+=1",
-            f'    echo error exit !ERRORLEVEL! {name} %DATE% %TIME%>"{done_path}"',
-            ") else (",
-            f'    echo done {name} %DATE% %TIME%>"{done_path}"',
-            ")",
-            "echo.",
-        ]
+        run_cmd = _job_run_cmd(python_exe, dest_launcher, dest_worker,
+                               blender_exe, blend_file, job_path,
+                               s.render_mode, _launcher_exists)
+        bat_lines += _job_bat_block(i + 1, total_jobs, name, run_cmd, done_path)
 
     # ── Write .bat footer ────────────────────────────────────────────────────
     bat_lines += [
@@ -1362,6 +1472,16 @@ class SmokeSettings(bpy.types.PropertyGroup):
             "Does not re-retry an already-retried run"
         ),
         default=False,
+    )
+    render_simulation_result: bpy.props.BoolProperty(
+        name="Render Simulation Result",
+        description=(
+            "When enabled, each job renders an MP4 animation and a final still "
+            "PNG after baking. Disable for a bake-only batch — validate the "
+            "simulation cache first, or render later by hand with other settings"
+        ),
+        default=True,
+        update=_on_render_sim_result_update,
     )
 
     # ── Job Log ───────────────────────────────────────────────────────────────
@@ -3741,17 +3861,29 @@ class SMOKE_PT_panel(bpy.types.Panel):
         sub_cache.enabled = not s.use_placeholders
         sub_cache.prop(s, "use_existing_cache", text="Use Existing Cache")
         layout.prop(s, "auto_retry_failed",  text="Automatically Retry Failed Jobs")
+
+        # Render Simulation Result (TODO-26): when off, run a bake-only batch and
+        # grey out everything that only matters when rendering.
+        layout.prop(s, "render_simulation_result", text="Render Simulation Result")
+        _render_on = s.render_simulation_result
+
         row = layout.row()
+        row.enabled = _render_on
         row.prop(s, "render_mode",    text="Render Engine")
         row.prop(s, "render_samples", text="Samples")
+
+        # Disable Export/Append while a batch is running (TODO-28 safeguard): the
+        # running cmd.exe already parsed the .bat, so editing it now can't help.
+        _running = _batch_is_running()
         row_mode = layout.row(align=True)
+        row_mode.enabled = not _running
         row_mode.prop(s, "export_mode", expand=True)
         export_row = layout.row()
         # Grey out the button when no jobs would be created so the user can't
         # click it and get a misleading "Exported 0 job(s)" success message.
         # In LIMITED mode the fallback baseline ensures count >= 1, so this
         # only fires in pathological cases (e.g. all-empty lists in ALL mode).
-        export_row.enabled = job_count > 0
+        export_row.enabled = job_count > 0 and not _running
         export_row.operator(
             "smoke.export_batch",
             text=f"Export Batch  ({job_count} jobs)",
@@ -3768,8 +3900,16 @@ class SMOKE_PT_panel(bpy.types.Panel):
                 col.label(text=info[60:])
 
         layout.separator()
-        layout.prop(s, "show_results")
-        layout.operator("smoke.run_batch", text="Run Batch", icon='PLAY')
+        # "Display Results When Finished" is meaningless in bake-only mode; grey
+        # it out there (the property is also force-cleared by its update callback).
+        row_show = layout.row()
+        row_show.enabled = _render_on
+        row_show.prop(s, "show_results")
+        # Run Batch is enabled only when a runnable batch exists on disk (TODO-25)
+        # and no batch is already running (TODO-28 safeguard).
+        run_row = layout.row()
+        run_row.enabled = _batch_ready(bpy.path.abspath(s.output_path)) and not _running
+        run_row.operator("smoke.run_batch", text="Run Batch", icon='PLAY')
 
         if s.batch_summary_line1:
             layout.label(text=s.batch_summary_line1, icon='CHECKMARK')
@@ -3843,7 +3983,13 @@ class SMOKE_PT_panel(bpy.types.Panel):
             box_util.prop(s, "collect_estimation_data")
             box_util.prop(s, "collect_debug_log")
             box_util.separator()
-            box_util.operator("smoke.monitor_existing_jobs", text="Monitor Existing Jobs", icon='RECOVER_LAST')
+            # Only useful when an exported jobs folder is present to monitor.
+            _jobs_dir = os.path.join(bpy.path.abspath(s.output_path), "jobs")
+            row_mon = box_util.row()
+            row_mon.enabled = os.path.isdir(_jobs_dir) and any(
+                re.match(r'^job_\d{4}\.json$', f) for f in os.listdir(_jobs_dir)
+            )
+            row_mon.operator("smoke.monitor_existing_jobs", text="Monitor Existing Jobs", icon='RECOVER_LAST')
             box_util.separator()
             box_util.operator("smoke.remove_all_jobs", text="Remove All Jobs", icon='TRASH')
             box_util.separator()
@@ -3948,6 +4094,7 @@ def _reset_on_load(dummy=None):
         s.use_placeholders   = False
         s.use_existing_cache = False
         s.auto_retry_failed  = False
+        s.render_simulation_result = True
         s.show_results       = False
 
         # ── Utilities ─────────────────────────────────────────────────────────

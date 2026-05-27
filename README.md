@@ -16,6 +16,7 @@ SmokeSimLab automates the tedious process of testing many different smoke simula
   - _All Combinations_ — full Cartesian product of all ranges
 - **Iterate Both On and Off** — include a direct on/off comparison for Dissolve and Noise within a single batch
 - **Per-job outputs:** MP4 playblast, PNG final still, and a row in `results.csv`
+- **Render Simulation Result** — uncheck for a bake-only batch (validate the simulation caches first, render later by hand); the render engine/sample controls grey out
 - **In-render text object updates** — scene FONT objects display the current parameter values in each render
 - **Cycles GPU rendering** (OptiX → CUDA → HIP fallback) in background mode, or EEVEE in windowed mode
 - **OpenVDB + Blosc cache** format for compact, fast cache files
@@ -29,6 +30,7 @@ SmokeSimLab automates the tedious process of testing many different smoke simula
 - **Auto Retry Failed** — automatically re-runs failed jobs once before marking them as failed
 - **Monitor Existing Jobs** — reconnect to an already-running batch after Blender is closed and reopened; rebuilds the job log and resumes progress monitoring without restarting the batch
 - **Console auto-close** — the batch console window closes automatically on completion; leave **Collect Debug Logs** checked to keep it open for inspection
+- **Append / Replace export** — Append adds new jobs after existing ones; the regenerated `run_smoke_batch.bat` re-lists prior jobs so none are dropped. Export and Run Batch are disabled while a batch is running
 - **Reset To Defaults** — restore all settings and clear the job log with one click
 
 ---
