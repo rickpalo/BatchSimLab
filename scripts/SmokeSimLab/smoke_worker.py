@@ -672,6 +672,24 @@ elif use_existing_cache and baked_frames:
         except OSError as _e:
             _log(f"[{name}] WARNING: Presave merge failed ({_e}) — "
                  f"bake will proceed; Mantaflow may re-bake all frames from scratch")
+    # Set cache_frame_pause_data so Mantaflow resumes from the last baked frame.
+    # Assigning d.cache_directory above resets this internal counter to 0; without
+    # restoring it, bake_all() starts from frame_start even when VDB files for
+    # earlier frames are already present in the cache directory.
+    _resume_frame = max(baked_frames) if baked_frames else 0
+    try:
+        d.cache_frame_pause_data = _resume_frame
+        _log(f"[{name}] RESUME: cache_frame_pause_data → {_resume_frame} "
+             f"(bake will start at frame {_resume_frame + 1})")
+    except AttributeError:
+        _log(f"[{name}] WARNING: cache_frame_pause_data not found — "
+             f"Mantaflow may re-bake all {frame_end} frames from scratch")
+    try:
+        d.cache_frame_pause_noise = _resume_frame
+    except AttributeError:
+        pass
+    bpy.context.view_layer.update()
+    _time.sleep(2.0)
     _log(f"[{name}] Baking...")
     bake_start   = _time.time()
     _bake_result = bpy.ops.fluid.bake_all()

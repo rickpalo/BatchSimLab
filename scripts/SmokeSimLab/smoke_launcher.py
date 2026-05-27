@@ -401,6 +401,15 @@ def main():
 
     exit_code = proc.returncode
     if exit_code != 0:
+        # TODO (v0.2.26): Crash timing inconsistency observed in production — one crash
+        # stalled ~5 minutes before the batch moved on; a second crash in the same batch
+        # moved on almost immediately.  Possible causes: (a) WerFault appeared but
+        # _find_werfault_for_pid missed it (process-tree mismatch or timing gap between
+        # exit and WerFault spawn), leaving Blender's process lingering; (b) Blender
+        # hung for several minutes before actually exiting with a non-zero code.
+        # Investigate: log proc.pid / exit_code / time-to-exit on each crash, and check
+        # whether _POST_EXIT_WERFAULT_SECS (currently 30 s) should be extended or whether
+        # a shorter _STALE_LOG_TIMEOUT is needed for the hung-process case.
         # Poll for WerFault for up to _POST_EXIT_WERFAULT_SECS.
         _deadline = time.time() + _POST_EXIT_WERFAULT_SECS
         while time.time() < _deadline:

@@ -43,7 +43,7 @@ Requires Blender 4.x (tested on 4.5.5 and 5.1.1) on Windows 10/11.  May work on 
 bl_info = {
     "name":        "SmokeSimLab",
     "author":      "Rick Palo",
-    "version":     (0, 2, 25),
+    "version":     (0, 2, 30),
     "blender":     (4, 0, 0),
     "location":    "View3D > Sidebar > SmokeLab",
     "description": "Batch smoke simulation parameter sweeper with CSV logging",
@@ -906,8 +906,9 @@ def export_batch(context):
         "echo Batch complete.  Errors: %ERRORS%",
         f'echo Results: {os.path.join(output_path, "Renders", "results.csv")}',
         "echo ================================",
-        "pause",
     ]
+    if s.collect_debug_log:
+        bat_lines.append("pause")
 
     bat_path = os.path.join(output_path, "run_smoke_batch.bat")
     with open(bat_path, "w") as fh:
@@ -1775,44 +1776,78 @@ def _find_running_log(jobs_dir):
     A job is considered finished if its log tail contains a done marker, a
     .done file exists, OR a higher-numbered .done stem exists (sequential batch
     guarantee: if job_0005.done is present, job_0003 must already be complete).
-    The higher-stem check handles the crash-without-.done case where a stale log
-    would otherwise shadow all later jobs.
+
+    Two-pass search: retry logs are checked first using only retry done-stems.
+    Mixing first-run and retry stems in one sorted pass causes false skips because
+    _retry stems sort before later first-run stems alphabetically — for example,
+    "job_0003_retry" < "job_0010", so a completed job_0010.done would incorrectly
+    cause job_0003_retry.log to be skipped, and the poller would fall through to the
+    stale first-run log instead, displaying frame counts from the wrong job.
+
+    First-run pass also treats .crashed files as a "done" signal so that a crashed
+    job whose launcher never wrote .done doesn't shadow all subsequent logs.
     """
     try:
         all_files = set(os.listdir(jobs_dir))
     except OSError:
         return None
 
-    # Build the set of all stems that have a .done file, for the sequential check.
-    done_stems = {f[:-5] for f in all_files if f.endswith(".done")}
+    done_stems       = {f[:-5]  for f in all_files if f.endswith(".done")}
+    retry_done_stems = {f[:-11] for f in all_files if f.endswith("_retry.done")}
 
-    for log_file in reversed(sorted(f for f in all_files if f.endswith(".log"))):
+    def _read_candidate(log_file, seq_stems, *, crashed_done=False):
         log_stem = log_file[:-4]
         if log_stem + ".done" in all_files:
-            continue
-        # Sequential batch: if any higher-numbered done stem exists, this log
-        # is from a job that already completed (even if its .done never arrived).
-        if any(s > log_stem for s in done_stems):
-            continue
+            return None
+        if crashed_done and log_stem + ".crashed" in all_files:
+            return None
+        if any(s > log_stem for s in seq_stems):
+            return None
         try:
             with open(os.path.join(jobs_dir, log_file), "r", errors="replace") as fh:
                 tail = fh.read()[-4096:]
         except OSError:
-            continue
+            return None
         if any(marker in tail for marker in _LOG_DONE_MARKERS):
-            continue
+            return None
         return log_file, log_stem, tail
+
+    # Pass 1: retry logs — sequential check uses only retry done-stems so a
+    # completed job_NNNN.done doesn't skip an active job_MMMM_retry.log.
+    retry_logs = sorted(f for f in all_files if f.endswith("_retry.log"))
+    if retry_logs:
+        for log_file in reversed(retry_logs):
+            result = _read_candidate(log_file, retry_done_stems)
+            if result:
+                return result
+
+    # Pass 2: first-run logs — skip any log whose stem has a .crashed marker.
+    first_logs = sorted(f for f in all_files if f.endswith(".log") and "_retry" not in f)
+    for log_file in reversed(first_logs):
+        result = _read_candidate(log_file, done_stems, crashed_done=True)
+        if result:
+            return result
+
     return None
 
 
-def _count_vdb_frames(jobs_dir, log_stem, tail=None):
-    """Return (frames_baked, frame_end) by counting VDB files for log_stem, or None.
+def _count_vdb_frames(jobs_dir, log_stem, tail=None, start_time=None):
+    """Return (frames_counted, frame_end) by counting VDB files for log_stem, or None.
 
     When tail is supplied the function tries to extract the effective cache dir
     from the v0.2.7+ "Effective cache dir" log line so it counts files in the
     directory the worker is actually baking into (which may differ from the
     current job's own cache dir when use_existing_cache resumes from another run).
     Falls back to Cache/<name>/data/ when the log line is absent.
+
+    When start_time is provided (a time.time() value), only VDB files with an
+    mtime >= start_time - 10.0 are counted.  This handles two failure modes:
+    (1) Mantaflow re-bakes from frame 1 instead of resuming (overwriting the
+        moved presave files — count stays constant, baseline subtraction produces 0)
+    (2) Monitor Existing Jobs reconnects mid-bake (pre-existing files would inflate
+        the baseline).
+    Files moved from the presave directory keep their original mtime, so they are
+    naturally excluded when start_time filtering is active.
     """
     json_path = os.path.join(jobs_dir, log_stem + ".json")
     try:
@@ -1826,6 +1861,25 @@ def _count_vdb_frames(jobs_dir, log_stem, tail=None):
     if not (output_path and name and frame_end):
         return None
 
+    mtime_cutoff = (start_time - 10.0) if start_time else None
+
+    def _vdb_count_from_dir(data_dir):
+        counted = set()
+        if not os.path.isdir(data_dir):
+            return counted
+        for f in os.listdir(data_dir):
+            m = re.search(r'_(\d{4})\.vdb$', f)
+            if not m:
+                continue
+            if mtime_cutoff is not None:
+                try:
+                    if os.path.getmtime(os.path.join(data_dir, f)) < mtime_cutoff:
+                        continue
+                except OSError:
+                    pass
+            counted.add(int(m.group(1)))
+        return counted
+
     frames_baked = set()
 
     # Try to use the effective cache dir recorded in the log (v0.2.7+).
@@ -1835,19 +1889,11 @@ def _count_vdb_frames(jobs_dir, log_stem, tail=None):
             _eff = _m.group(1).strip()
             _data = os.path.join(_eff, "data")
             if os.path.isdir(_data):
-                for f in os.listdir(_data):
-                    m = re.search(r'_(\d{4})\.vdb$', f)
-                    if m:
-                        frames_baked.add(int(m.group(1)))
+                frames_baked = _vdb_count_from_dir(_data)
                 return len(frames_baked), frame_end
 
     # Fall back: look in this job's own cache dir.
-    data_dir = os.path.join(output_path, "Cache", name, "data")
-    if os.path.isdir(data_dir):
-        for f in os.listdir(data_dir):
-            m = re.search(r'_(\d{4})\.vdb$', f)
-            if m:
-                frames_baked.add(int(m.group(1)))
+    frames_baked = _vdb_count_from_dir(os.path.join(output_path, "Cache", name, "data"))
     return len(frames_baked), frame_end
 
 
@@ -2480,16 +2526,26 @@ def _poll_batch_progress_impl():
             subtask_factor = min((stage_completed + 0.5) / _TOTAL_SUBTASKS, 1.0)
 
             if stage_label == "Baking simulation":
-                bake_info = _count_vdb_frames(jobs_dir, log_stem, tail)
+                # Pass bake_start_time so only VDB files written this session are
+                # counted.  This handles Mantaflow re-baking from frame 1 (it
+                # overwrites the moved presave files rather than resuming): since
+                # moved files keep their original mtime, mtime filtering naturally
+                # excludes them and counts only freshly written frames.
+                _bake_st  = _bt("bake_start_time") if _bt("bake_start_time") > 0 else None
+                bake_info = _count_vdb_frames(jobs_dir, log_stem, tail,
+                                              start_time=_bake_st)
                 if bake_info:
-                    raw_baked, total_frames = bake_info
+                    baked_new, total_frames = bake_info   # baked_new = mtime-filtered
                     bake_baseline = max(s.batch_bake_frame_baseline, 0)
-                    baked_new     = max(raw_baked - bake_baseline, 0)
                     to_bake       = max(total_frames - bake_baseline, 1)
+                    # If Mantaflow is doing a full rebake, mtime count will exceed
+                    # the expected remaining frames — expand denominator to total.
+                    if baked_new > to_bake:
+                        to_bake = total_frames
                     frames_baked  = baked_new
                     if to_bake > 0:
                         subtask_text   = f"Baking ({baked_new} of {to_bake})"
-                        subtask_factor = baked_new / to_bake
+                        subtask_factor = min(baked_new / to_bake, 1.0)
 
             elif stage_label == "Rendering animation":
                 _start_t    = _bt("job_start_time") if _bt("job_start_time") > 0 else None
@@ -2567,6 +2623,9 @@ def _poll_batch_progress_impl():
                 if elapsed_bake > 0:
                     _bake_baseline = max(s.batch_bake_frame_baseline, 0)
                     _to_bake_total = max(frame_end - _bake_baseline, 1)
+                    # Full-rebake detected: mtime count exceeded expected remaining.
+                    if frames_baked > _to_bake_total:
+                        _to_bake_total = frame_end
                     bake_to_go     = max(_to_bake_total - frames_baked, 0)
                     rate           = elapsed_bake / frames_baked
                     bake_remaining = rate * bake_to_go
@@ -2586,7 +2645,12 @@ def _poll_batch_progress_impl():
                 else:
                     bake_remaining = default_bake_secs
             else:
-                bake_remaining = default_bake_secs
+                # Scale the default estimate by the fraction of frames still to bake.
+                # When resuming a partial bake (e.g. after Monitor or a crash+retry),
+                # bake_baseline > 0 so only a fraction of the full default is needed.
+                _bbl      = max(s.batch_bake_frame_baseline, 0)
+                _to_go    = max(frame_end - _bbl, 1)
+                bake_remaining = default_bake_secs * _to_go / max(frame_end, 1)
 
             # Render: actual → real-time rate → default.
             # Guard against frames_rendered == render_target (directory fully
@@ -2960,8 +3024,9 @@ class SMOKE_OT_retry_failed(bpy.types.Operator):
             "echo ================================",
             "echo Retry complete.  Errors: %ERRORS%",
             "echo ================================",
-            "pause",
         ]
+        if s.collect_debug_log:
+            bat_lines.append("pause")
 
         bat_path = os.path.join(output_path, "run_retry_failed.bat")
         with open(bat_path, "w") as fh:
@@ -3269,6 +3334,102 @@ class SMOKE_OT_remove_all_jobs(bpy.types.Operator):
             self.report({'WARNING'}, f"Removed {len(deleted)} item(s); could not remove: {', '.join(skipped)}")
         else:
             self.report({'INFO'}, f"Removed {len(deleted)} exported item(s)")
+        return {'FINISHED'}
+
+
+class SMOKE_OT_monitor_existing_jobs(bpy.types.Operator):
+    """Reconnect to a batch that is already running (or recently finished)."""
+
+    bl_idname = "smoke.monitor_existing_jobs"
+    bl_label  = "Monitor Existing Jobs"
+    bl_description = (
+        "Scan the jobs folder and resume monitoring an in-progress or completed batch. "
+        "Use this if Blender was reopened while a batch was running — the job log "
+        "and progress bars will pick up as if the addon had been watching all along."
+    )
+
+    def execute(self, context):
+        s           = context.scene.smoke_settings
+        output_path = bpy.path.abspath(s.output_path)
+        jobs_dir    = os.path.join(output_path, "jobs")
+
+        if not os.path.isdir(jobs_dir):
+            self.report({'ERROR'}, "Jobs folder not found — run Export Batch first")
+            return {'CANCELLED'}
+
+        # Read all first-run JSON files sorted by job index.
+        job_entries = []
+        for f in sorted(os.listdir(jobs_dir)):
+            if not (f.endswith(".json") and "_retry" not in f):
+                continue
+            try:
+                with open(os.path.join(jobs_dir, f)) as fh:
+                    jd = json.load(fh)
+                stem    = f[:-5]                   # "job_NNNN"
+                idx     = int(stem.split("_", 1)[1])  # 0-based
+                job_entries.append((idx + 1, jd.get("name", stem)))
+            except (OSError, json.JSONDecodeError, ValueError):
+                pass
+
+        if not job_entries:
+            self.report({'ERROR'}, "No job files found in jobs folder")
+            return {'CANCELLED'}
+
+        # Stop any already-running poll timer to avoid double-registration.
+        if bpy.app.timers.is_registered(_poll_batch_progress):
+            bpy.app.timers.unregister(_poll_batch_progress)
+
+        global _last_auto_index
+        _job_statuses.clear()
+        _job_log_rows.clear()
+        s.job_log_items.clear()
+
+        for job_num, job_name in job_entries:
+            item            = s.job_log_items.add()
+            item.job_number = job_num
+            item.job_name   = job_name
+            item.status     = 'NOT_STARTED'
+            _job_log_rows.append((job_num, job_name))
+
+        s.show_job_log        = True
+        s.job_log_auto_scroll = True
+        _last_auto_index      = 0
+
+        all_files = set(os.listdir(jobs_dir))
+        done_now  = len([f for f in all_files if f.endswith(".done")])
+        total     = len(job_entries)
+
+        s.batch_summary_line1 = s.batch_summary_line2 = ""
+        s.batch_summary_line3 = s.batch_summary_line4 = ""
+        s.batch_total          = total
+        s.batch_jobs_dir       = jobs_dir
+        s.batch_progress       = f"{done_now} of {total} job(s) complete"
+        s.batch_overall_factor = done_now / total if total > 0 else 0.0
+        s.batch_subtask_text   = ""
+        s.batch_subtask_factor = 0.0
+        s.batch_job_text       = ""
+        s.batch_job_factor     = 0.0
+        _bt_set("start_time", time.time())
+        s.batch_time_remaining = "Estimating..."
+        s.batch_job_log_key       = ""
+        _bt_set("job_start_time", 0.0)
+        s.batch_frame_end         = 0
+        s.batch_jobs_elapsed      = 0.0
+        s.batch_resolution        = 0
+        s.batch_render_width      = 0
+        s.batch_render_height     = 0
+        s.batch_render_mode       = "CYCLES"
+        _bt_set("bake_start_time", 0.0)
+        _bt_set("render_start_time", 0.0)
+        _bt_set("still_start_time", 0.0)
+        s.batch_bake_secs_actual      = -1.0
+        s.batch_render_secs_actual    = -1.0
+        s.batch_bake_frame_baseline   = -1
+        s.batch_render_frame_baseline = -1
+
+        bpy.app.timers.register(_poll_batch_progress, first_interval=2.0)
+        _redraw_panels()
+        self.report({'INFO'}, f"Monitoring {total} job(s) — {done_now} already complete")
         return {'FINISHED'}
 
 
@@ -3682,6 +3843,8 @@ class SMOKE_PT_panel(bpy.types.Panel):
             box_util.prop(s, "collect_estimation_data")
             box_util.prop(s, "collect_debug_log")
             box_util.separator()
+            box_util.operator("smoke.monitor_existing_jobs", text="Monitor Existing Jobs", icon='RECOVER_LAST')
+            box_util.separator()
             box_util.operator("smoke.remove_all_jobs", text="Remove All Jobs", icon='TRASH')
             box_util.separator()
             row_reset = box_util.row()
@@ -3874,6 +4037,7 @@ classes = [
     SMOKE_OT_retry_failed,
     SMOKE_OT_setup_results,
     SMOKE_OT_remove_all_jobs,
+    SMOKE_OT_monitor_existing_jobs,
     SMOKE_OT_reset_to_defaults,
     SMOKE_PT_panel,
 ]
