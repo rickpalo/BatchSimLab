@@ -14,7 +14,7 @@ Applies fluid parameters, bakes, renders playblast MP4 + final still PNG,
 appends a row to Renders/results.csv, then quits Blender.
 """
 
-WORKER_VERSION = "0.3.1"
+WORKER_VERSION = "0.3.2"
 
 import bpy
 import sys
@@ -293,6 +293,9 @@ render_mode        = cfg.get("render_mode", "CYCLES")
 render_samples     = cfg.get("render_samples", 16)
 use_placeholders   = cfg.get("use_placeholders", False)
 use_existing_cache = cfg.get("use_existing_cache", False)
+# Version that exported this job (stamped into perf_log/results.csv for later
+# cross-version comparison); WORKER_VERSION is this script's own version.
+addon_version      = cfg.get("addon_version", "?")
 # Bake-only mode (TODO-26): when False, skip the MP4 + still render entirely.
 # Defaults True so pre-TODO-26 job JSONs still render as before.
 render_simulation_result = cfg.get("render_simulation_result", True)
@@ -323,7 +326,7 @@ os.makedirs(render_dir, exist_ok=True)
 os.makedirs(cache_dir,  exist_ok=True)
 
 _log(f"[{name}] Job started.")
-_log(f"[{name}] Blender {bpy.app.version_string}")
+_log(f"[{name}] Blender {bpy.app.version_string}  |  SmokeSimLab worker {WORKER_VERSION} (addon {addon_version})")
 _dlog(f"cfg: {cfg}")
 _log(f"[{name}] Cache dir: {cache_dir}")
 _log(f"[{name}] Render dir: {render_dir}")
@@ -922,6 +925,8 @@ header   = [
     "noise_strength",
     "noise_spatial_scale",
     "bake_seconds",
+    "version",   # addon version that produced this row (appended last so older
+                 # readers/columns stay aligned); for cross-version comparison
 ]
 write_header = not os.path.exists(csv_path)
 with open(csv_path, "a", encoding="utf-8") as fh:
@@ -939,6 +944,7 @@ with open(csv_path, "a", encoding="utf-8") as fh:
         p["noise_strength"]      if p["use_noise"] else "OFF",
         p["noise_spatial_scale"] if p["use_noise"] else "OFF",
         int(bake_seconds),
+        addon_version,
     ]) + "\n")
 
 _log(f"[{name}] Done. Results -> {csv_path}")
@@ -954,6 +960,8 @@ _ry        = scene.render.resolution_y
 _pixels    = _rx * _ry
 
 _perf = {
+    "addon_version": addon_version,
+    "worker_version": WORKER_VERSION,
     "job_name":    name,
     "resolution":  _res,
     "frame_end":   frame_end,

@@ -30,7 +30,7 @@ Behaviour
 No third-party dependencies — stdlib + tasklist.exe (built into Windows).
 """
 
-LAUNCHER_VERSION = "0.3.1"
+LAUNCHER_VERSION = "0.3.2"
 
 import atexit
 import ctypes
@@ -49,6 +49,7 @@ _POST_EXIT_WERFAULT_SECS = 30    # seconds to keep checking for WerFault after e
 _CRASH_DUMP_GRACE_SECS   = 15    # seconds to wait for blender.crash.txt to appear after a crash
 
 _blender_version_cache = None    # populated lazily on the first crash log
+_job_addon_version     = "?"     # addon version from the job JSON (for crash log)
 
 
 # ---------------------------------------------------------------------------
@@ -271,7 +272,8 @@ def _save_crash_log(jobs_dir, job_stem, launch_time=None, blender_exe=None):
     try:
         with open(dest, "a", encoding="utf-8") as fh:
             fh.write(f"\n=== {ts}  {job_stem} ===\n")
-            fh.write(f"Blender: {_bl_ver or 'unknown'}  (launcher {LAUNCHER_VERSION})\n")
+            fh.write(f"Blender: {_bl_ver or 'unknown'}  "
+                     f"(SmokeSimLab addon {_job_addon_version}, launcher {LAUNCHER_VERSION})\n")
             if _dump_present:
                 try:
                     with open(crash_src, "r", encoding="utf-8", errors="replace") as cf:
@@ -300,6 +302,8 @@ def main():
     with open(job_json, encoding="utf-8") as fh:
         job_data = json.load(fh)
 
+    global _job_addon_version
+    _job_addon_version = job_data.get("addon_version", "?")
     blend_file        = job_data.get("blend_file", "")
     render_mode       = job_data.get("render_mode", "CYCLES")
     output_path       = job_data.get("output_path", "")
@@ -338,7 +342,8 @@ def main():
                "--python", worker_py,
                "--", job_json]
 
-    _dlog(f"startup: python={sys.version.split()[0]}  platform={sys.platform}  "
+    _dlog(f"startup: launcher={LAUNCHER_VERSION}  addon={_job_addon_version}  "
+          f"python={sys.version.split()[0]}  platform={sys.platform}  "
           f"blender_exe={blender_exe!r}  job_json={job_json!r}")
     _dlog(f"cmd: {cmd}")
     print(f"[smoke_launcher] Starting job {job_stem}")

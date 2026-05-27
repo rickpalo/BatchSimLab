@@ -43,7 +43,7 @@ Requires Blender 4.x (tested on 4.5.5 and 5.1.1) on Windows 10/11.  May work on 
 bl_info = {
     "name":        "SmokeSimLab",
     "author":      "Rick Palo",
-    "version":     (0, 3, 1),
+    "version":     (0, 3, 2),
     "blender":     (4, 0, 0),
     "location":    "View3D > Sidebar > SmokeLab",
     "description": "Batch smoke simulation parameter sweeper with CSV logging",
@@ -63,7 +63,8 @@ import subprocess
 import sys
 import time
 
-print(f"SmokeSimLab {'.'.join(str(v) for v in bl_info['version'])} loaded")
+ADDON_VERSION = ".".join(str(v) for v in bl_info["version"])
+print(f"SmokeSimLab {ADDON_VERSION} loaded")
 
 
 DOCS_URL = "https://github.com/rickpalo/SmokeSimLab"
@@ -71,8 +72,8 @@ DOCS_URL = "https://github.com/rickpalo/SmokeSimLab"
 # Expected version strings in the helper files exported to the output folder.
 # When Run Batch detects a mismatch it warns the user to re-run Export Batch.
 # Keep these in sync with WORKER_VERSION / LAUNCHER_VERSION in those files.
-_EXPECTED_WORKER_VERSION   = "0.3.1"
-_EXPECTED_LAUNCHER_VERSION = "0.3.1"
+_EXPECTED_WORKER_VERSION   = "0.3.2"
+_EXPECTED_LAUNCHER_VERSION = "0.3.2"
 
 
 def _read_helper_version(path: str, var_name: str) -> str:
@@ -974,6 +975,7 @@ def export_batch(context):
             "domain_name":    s.domain_obj.name,
             "frame_start":    frame_start,
             "frame_end":      frame_end,
+            "addon_version":  ADDON_VERSION,
             "render_mode":    s.render_mode,
             "render_samples": s.render_samples,
             "render_simulation_result": s.render_simulation_result,
@@ -2279,6 +2281,7 @@ def _estim_log(record: dict) -> None:
     if not op:
         return
     record.setdefault("ts", round(time.time(), 2))
+    record.setdefault("addon_version", ADDON_VERSION)
     try:
         with open(os.path.join(op, "estim_log.jsonl"), "a", encoding="utf-8") as fh:
             fh.write(json.dumps(record) + "\n")
