@@ -4,6 +4,50 @@ Items to address once file synchronization catches up (~5,000 PNGs behind as of 
 
 ---
 
+## TODO-26: "Render Simulation Result" checkbox to skip rendering entirely
+
+**Goal:** Allow users to run a bake-only batch (no MP4 / PNG render) for cases
+where they want to validate the simulation cache before committing render time,
+or where rendering will be done later by hand with different settings.
+
+**UI changes:**
+- Add a new BoolProperty `render_simulation_result` (default `True`) on
+  `SmokeSettings`.
+- In `SMOKE_PT_panel.draw`, place a checkbox labeled **"Render Simulation Result"**
+  *below* the "Automatically Retry Failed Jobs" checkbox and *above* the
+  Render Engine selector.
+- When `render_simulation_result` is `False`:
+  - Disable the Render Engine selector (`row.enabled = False`).
+  - Disable the Samples field.
+  - Uncheck *and* disable the "Display Results When Finished" checkbox
+    (set `display_results_when_finished = False` and gray it out).
+
+**Behaviour changes:**
+- In `smoke_worker.py`, when the job config has `render_simulation_result = False`:
+  - Skip the playblast/MP4 render step.
+  - Skip the final still PNG render step.
+  - Still write the `results.csv` row (with empty/null values for render-related
+    columns, or omit them — TBD).
+  - Still write `.done` / `.worker_done` sentinels so the launcher treats the
+    job as complete.
+- In `__init__.py`, when `render_simulation_result = False`:
+  - Skip the "show renders" / display step at batch completion.
+  - The progress bar should NOT show "Rendering animation" / "Rendering still"
+    stages (the worker will not log them).
+
+**Export changes:**
+- `SMOKE_OT_export_batch` should include `render_simulation_result` in each
+  `job_NNNN.json` so the worker knows whether to render.
+
+**Files:** `__init__.py` — `SmokeSettings`, `SMOKE_PT_panel.draw`, `export_batch`;
+`smoke_worker.py` — render section guards.
+
+**Tests:** Add a test that confirms the worker exits cleanly without rendering
+when `render_simulation_result = False`; add a UI test (if practical) that
+confirms the Render Engine / Samples / Display Results controls become disabled.
+
+---
+
 ## TODO-25: Run Batch button should be disabled until there are jobs to run
 
 **Observed:** The "Run Batch" button is always enabled, even when no jobs have
