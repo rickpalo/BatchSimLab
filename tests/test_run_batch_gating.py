@@ -106,3 +106,22 @@ class TestWorkerBakeFrameRange:
 
     def test_sets_cache_frame_end_from_job(self):
         assert re.search(r"d\.cache_frame_end\s*=\s*frame_end", self._worker_src())
+
+
+class TestWorkerResumeNoReload:
+    """Regression for BUG-010 attempt 4 (v0.3.1): the RESUME branch must NOT
+    save/reload the .blend. open_mainfile() mid-script leaves bake_all() unable
+    to run in windowed (EEVEE) mode and the worker hangs forever on the bake."""
+    def _worker_src(self):
+        path = os.path.join(os.path.dirname(__file__), "..",
+                            "scripts", "SmokeSimLab", "smoke_worker.py")
+        with open(path, encoding="utf-8") as fh:
+            return fh.read()
+
+    def test_no_open_mainfile_call(self):
+        # The explanatory comment may mention open_mainfile(); only the actual
+        # bpy operator call is forbidden.
+        assert "bpy.ops.wm.open_mainfile" not in self._worker_src()
+
+    def test_no_save_as_mainfile_call(self):
+        assert "bpy.ops.wm.save_as_mainfile" not in self._worker_src()

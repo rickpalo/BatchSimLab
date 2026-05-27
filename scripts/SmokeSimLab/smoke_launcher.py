@@ -30,7 +30,7 @@ Behaviour
 No third-party dependencies — stdlib + tasklist.exe (built into Windows).
 """
 
-LAUNCHER_VERSION = "0.3.0"
+LAUNCHER_VERSION = "0.3.1"
 
 import atexit
 import ctypes

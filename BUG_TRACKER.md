@@ -549,7 +549,8 @@ over earlier completed/crashed first-run jobs.
 
 ## BUG-010: RESUME Bake Always Starts from Frame 1
 
-**Status:** `DEPLOYED / UNVERIFIED` (v0.2.31 — re-bake-from-1 accepted as correct)  
+**Status:** `DEPLOYED / UNVERIFIED` (v0.3.1 — save/reload removed after it hung a
+res-512 bake; back to v0.2.31 re-bake-from-1, which is correct if slow)  
 **Files:** `smoke_worker.py` — RESUME bake decision branch
 
 ### Symptoms
@@ -619,8 +620,40 @@ filtered progress bar (v0.2.29) then counted all frames as new, showing
 - *Status:* **DEPLOYED / UNVERIFIED.**  First production run is also the
   diagnostic — log output reveals which path Mantaflow took.
 
+**Attempt 4 — save/reload hangs the bake; reverted (v0.3.1)**
+- *Symptom (v0.3.0, res-512 production job):* RESUME merged 168/500 frames,
+  saved + reloaded the temp `.blend`, logged `Baking...`, then **hung
+  indefinitely**. The worker never returned from `bpy.ops.fluid.bake_all()`:
+  Blender sat at ~0% CPU, 28/128 GB RAM, the windowed (EEVEE) UI showed **no
+  bake in progress**, and no cache file was written for 30+ min. A clean FULL
+  bake of the same 500 frames at res 512 finishes in ~90 min, so it was not
+  slow or memory-bound — it was deadlocked.
+- *Root cause:* `bpy.ops.wm.open_mainfile()` mid-script leaves the bake
+  operator unable to run in windowed mode — the script blocks on `bake_all()`
+  while the operator waits on an event loop that never pumps. The reload also
+  never achieved a true resume (`cache_frame_pause_data` was 0 afterward), so
+  it was pure downside.
+- *Fix (v0.3.1):* Removed the entire save/reload block from the RESUME branch.
+  RESUME now reverts to the v0.2.31 behavior: merge presaved VDBs, then
+  `bake_all()` in the same process (re-bakes from frame 1, overwrites in place,
+  all frames end present). No `open_mainfile`, no temp `.blend`.
+- *Status:* **DEPLOYED / UNVERIFIED.** RESUME still re-bakes from frame 1 (the
+  underlying Mantaflow limitation is unchanged) — but it no longer hangs.
+- *CONFIRMED re-bake-from-1 (2026-05-27, ResumeTesting/):* A 4-job chain at
+  res 16 sharing one cache (frames 1-20 → 1-50 → 1-75 → 1-200) ended with the
+  correct file counts (so it "appeared to resume"), but the VDB **mtimes prove
+  no resume**: after the final 1-200 job, every frame 1..200 carried that job's
+  timestamps (14:44:42→:51, monotonic), not the earlier jobs' (14:43:50 etc.).
+  Each RESUME job re-baked the whole range from frame 1. The save/reload
+  (v0.3.0) never changed this — it gave the same re-bake plus a windowed hang.
+  True partial resume is still unsolved; the promising untried path is to bake
+  in `--background` mode, where `open_mainfile`+`bake_all` are synchronous and
+  Mantaflow's native cache rescan (the UI "Resume Bake" path) should work.
+
 ### Tests Added
-None — requires Blender runtime.
+`tests/test_run_batch_gating.py::TestWorkerResumeNoReload` — asserts the worker
+RESUME path no longer calls `open_mainfile` / `save_as_mainfile` (regression
+guard for the hang).
 
 ---
 

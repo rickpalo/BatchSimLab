@@ -4,7 +4,38 @@ Items to address once file synchronization catches up (~5,000 PNGs behind as of 
 
 ---
 
-## TODO-29: Warn on Run Batch when rendering is on but the scene has no camera
+## TODO-31: RESUME progress bar should start at "(already-baked + 1) of total"
+
+**Filed 2026-05-27.** On a resume with e.g. 100/500 frames already baked, the
+bar should read **"101 of 500"** at the start, not "0 of 332" (332 = missing).
+The completed frames should count toward the full total.
+
+**Dependency / caveat (important):** RESUME currently **re-bakes from frame 1**
+(Mantaflow limitation, BUG-010 — there's no scripted API to truly resume
+mid-range). So while it re-bakes frames 1–100 (overwriting in place), there is
+no honest way to show "101 of 500" advancing — those frames are being redone.
+Options:
+- (a) **Display-only:** show `max(already_baked, frames_this_run) of total`, so
+  it opens at "100 of 500" and holds there until the re-bake passes frame 100,
+  then climbs. Matches the user's mental model but sits still during the 1–100
+  re-bake (looks stalled, esp. at high res).
+- (b) Honest "re-baking N of 500" climbing from 1 (current mtime-based count vs
+  full total) — accurate but doesn't match the request.
+- Truly starting at 101 requires **real partial resume**, which BUG-010 says is
+  not achievable in scripted Mantaflow. So this TODO is blocked on that unless
+  we accept option (a)'s cosmetic behavior.
+
+**Files:** `__init__.py` — `_poll_batch_progress_impl` bake-bar section,
+`batch_bake_frame_baseline`. **Decision needed:** accept option (a)?
+
+---
+
+## TODO-29: Warn when rendering is on but the scene has no camera — **ACCEPTED, NOT STARTED**
+
+**Decision (2026-05-27):** Approved the recommended approach — a
+`_scene_has_camera(scene)` helper used in **both** places: at **Export** (if no
+camera + render on, warn and offer to export as bake-only) and at **Run Batch**
+(warn + offer cancel). Not scheduled yet.
 
 **Filed 2026-05-27 (test run feedback).** If the scene has no camera and
 **Render Simulation Result** is enabled, the renders will be black / fail. On
@@ -28,7 +59,12 @@ a `_scene_has_camera` helper. **Tests:** `_scene_has_camera` unit test.
 
 ---
 
-## TODO-30: Allow renaming a job in the Job Log (double-click / F2)
+## TODO-30: Allow renaming a job in the Job Log (double-click / F2) — **REJECTED** (2026-05-27)
+
+**Rejected:** not worth the effort. The job name is parameter-derived and
+coupled to the cache/render directory names (see analysis below), so a useful
+rename would require moving on-disk artifacts and would not survive a re-export.
+Low value for the complexity. Kept for the record.
 
 **Filed 2026-05-27 (test run feedback).** Let the user rename a job in the Job
 Log list, only while no batch is running (before or after a run).

@@ -127,3 +127,4 @@ git push origin :refs/tags/v0.2.21   # delete remote tag
 | 0.2.32  | RESUME save/reload .blend to trigger Mantaflow rescan + auto-resume (with diagnostic logging) |
 | 0.2.33  | Launcher grace period for crash dumps (partial TODO-27); sync WORKER/LAUNCHER versions |
 | 0.3.0   | **Minor release.** TODO-25 Run Batch gating; TODO-26 Render Simulation Result (bake-only mode); TODO-28 append .bat re-lists prior jobs + mid-run export/run guard; BUG-011 bake honours the job frame range (set cache_frame_start/end — was baking the .blend's full 500-frame range); TODO-22 crash-timing diagnostics (time_to_exit via debug_log); crash_log + worker log now record the Blender version |
+| 0.3.1   | BUG-010 fix: RESUME no longer save/reloads the .blend (open_mainfile mid-script hung bake_all in windowed/EEVEE mode — observed deadlocking a res-512 job). Reverts to merge + bake-from-1 in-process |
