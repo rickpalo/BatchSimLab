@@ -43,7 +43,7 @@ Requires Blender 4.x (tested on 4.5.5 and 5.1.1) on Windows 10/11.  May work on 
 bl_info = {
     "name":        "SmokeSimLab",
     "author":      "Rick Palo",
-    "version":     (0, 3, 2),
+    "version":     (0, 3, 3),
     "blender":     (4, 0, 0),
     "location":    "View3D > Sidebar > SmokeLab",
     "description": "Batch smoke simulation parameter sweeper with CSV logging",
@@ -1469,9 +1469,9 @@ class SmokeSettings(bpy.types.PropertyGroup):
     auto_retry_failed: bpy.props.BoolProperty(
         name="Automatically Retry Failed Jobs",
         description=(
-            "After all jobs finish, automatically re-run any that reported errors "
-            "once, with Use Existing Cache and Use Placeholders both forced on. "
-            "Does not re-retry an already-retried run"
+            "After all jobs finish, automatically re-run any that reported errors, "
+            "with Use Existing Cache and Use Placeholders both forced on. "
+            "Repeats up to 3 times per batch, re-running only the still-failing jobs"
         ),
         default=False,
     )
@@ -2234,6 +2234,22 @@ _job_log_rows:  list = []   # [(job_number, job_name), ...]  — written at expo
 # Job log auto-scroll: last index the timer wrote, so we can detect manual scrolls.
 _last_auto_index: int = 0
 
+# Auto-retry: re-run failed jobs up to _MAX_AUTO_RETRIES times per batch.
+# _auto_retry_count is the number of automatic retry rounds already launched for
+# the current batch; reset to 0 on each fresh Run Batch.
+_MAX_AUTO_RETRIES: int = 3
+_auto_retry_count: int = 0
+
+
+def _should_auto_retry(errors, enabled, retry_count, max_retries=_MAX_AUTO_RETRIES):
+    """Return True if the completed run should trigger another auto-retry round.
+
+    Fires while there are failures, the option is on, and we haven't yet used the
+    per-batch retry budget.  (Replaces the old single-round `not is_retry_run`
+    guard so failures get up to `max_retries` automatic re-runs.)
+    """
+    return bool(errors > 0 and enabled and retry_count < max_retries)
+
 # Estimation log — append-only JSONL diagnostic file
 # ---------------------------------------------------------------------------
 
@@ -2378,10 +2394,10 @@ def _poll_batch_progress_impl():
                 except OSError:
                     pass
 
-            # Auto-retry fires once: only for the initial run (not a retry run).
-            # A retry run always has at least one "_retry" in its .done filenames.
-            is_retry_run = any("_retry" in f for f in done_files)
-            will_auto_retry = (errors > 0 and s.auto_retry_failed and not is_retry_run)
+            # Auto-retry up to _MAX_AUTO_RETRIES rounds per batch (_auto_retry_count
+            # tracks rounds already launched; reset on a fresh Run Batch).  Each
+            # round re-runs only the jobs still reporting errors.
+            will_auto_retry = _should_auto_retry(errors, s.auto_retry_failed, _auto_retry_count)
 
             # Estimation log: batch complete.
             _estim_log({
@@ -2975,12 +2991,13 @@ class SMOKE_OT_run_batch(bpy.types.Operator):
                     except OSError:
                         pass
 
-        global _last_auto_index
+        global _last_auto_index, _auto_retry_count
         s.batch_summary_line1 = s.batch_summary_line2 = ""
         s.batch_summary_line3 = s.batch_summary_line4 = ""
         s.show_job_log           = True
         s.job_log_auto_scroll    = True
         _last_auto_index         = 0
+        _auto_retry_count        = 0   # fresh per-batch auto-retry budget
         _job_statuses.clear()
         # Repopulate _job_log_rows if it was lost (e.g. addon reload between
         # Export and Run).  job_log_items is the persistent source of truth.
@@ -3218,6 +3235,8 @@ class SMOKE_OT_retry_failed(bpy.types.Operator):
 
 def _auto_retry_deferred():
     """Called from a timer; runs Retry Failed Jobs automatically."""
+    global _auto_retry_count
+    _auto_retry_count += 1   # count this round against the per-batch retry budget
     for window in bpy.context.window_manager.windows:
         for area in window.screen.areas:
             with bpy.context.temp_override(window=window, area=area):
