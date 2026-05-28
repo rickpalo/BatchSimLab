@@ -99,12 +99,16 @@ Options:
 
 ---
 
-## TODO-29: Warn when rendering is on but the scene has no camera — **ACCEPTED, NOT STARTED**
+## TODO-29: Warn when rendering is on but the scene has no camera — **DONE** (v0.4.6)
 
-**Decision (2026-05-27):** Approved the recommended approach — a
-`_scene_has_camera(scene)` helper used in **both** places: at **Export** (if no
-camera + render on, warn and offer to export as bake-only) and at **Run Batch**
-(warn + offer cancel). Not scheduled yet.
+**Resolution (v0.4.6):** `_scene_has_camera(scene)` helper added (pure;
+`any(obj.type == 'CAMERA' for obj in scene.objects)`).  Both Export Batch and
+Run Batch now check `render_simulation_result and not _scene_has_camera(...)`
+in their `invoke` and show a confirmation dialog if the warning fires.  Export
+Batch combines the camera warning with the existing high-resolution warning in
+one dialog (operator instance caches both flags as `_warn_cam` / `_warn_res`).
+Cancel aborts; OK proceeds anyway (so the user can dismiss with a single click
+if they know what they're doing).  Tests: `tests/test_camera_check.py` (9).
 
 **Filed 2026-05-27 (test run feedback).** If the scene has no camera and
 **Render Simulation Result** is enabled, the renders will be black / fail. On

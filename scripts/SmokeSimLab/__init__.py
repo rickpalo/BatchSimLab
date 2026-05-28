@@ -43,7 +43,7 @@ Requires Blender 4.x (tested on 4.5.5 and 5.1.1) on Windows 10/11.  May work on 
 bl_info = {
     "name":        "SmokeSimLab",
     "author":      "Rick Palo",
-    "version":     (0, 4, 5),
+    "version":     (0, 4, 6),
     "blender":     (4, 0, 0),
     "location":    "View3D > Sidebar > SmokeLab",
     "description": "Batch smoke simulation parameter sweeper with CSV logging",
@@ -697,6 +697,19 @@ _CRASHED_RE      = re.compile(r"^job_\d{4}\.crashed$")
 # written).  Final job-complete trigger still uses _DONE_RE / _RETRY_DONE_RE.
 _BAKE_DONE_RE    = re.compile(r"^job_\d{4}\.bake\.done$")
 _RENDER_DONE_RE  = re.compile(r"^job_\d{4}\.render\.done$")
+
+
+def _scene_has_camera(scene):
+    """Return True if `scene` has at least one CAMERA object.
+
+    Used by Export Batch and Run Batch to warn when rendering is on but no
+    camera exists in the scene — the render passes will produce black/empty
+    images.  Pure helper (testable with any object-list-bearing stub).
+    """
+    try:
+        return any(obj.type == 'CAMERA' for obj in scene.objects)
+    except AttributeError:
+        return False
 
 
 def _find_next_job_index(jobs_dir):
@@ -1706,18 +1719,33 @@ class SMOKE_OT_export_batch(bpy.types.Operator):
         s      = context.scene.smoke_settings
         prefs  = context.preferences.addons.get(__name__)
         limit  = prefs.preferences.resolution_caution if prefs else 1024
-        if any(v > limit for v in expand_param(s, "resolution")):
+        # Cache both warning flags on the operator instance so draw() can pick
+        # which sections to show (operator instance survives invoke→draw→execute
+        # within a single call).
+        self._warn_res = any(v > limit for v in expand_param(s, "resolution"))
+        self._warn_cam = (s.render_simulation_result
+                          and not _scene_has_camera(context.scene))
+        if self._warn_res or self._warn_cam:
             return context.window_manager.invoke_props_dialog(self, width=420)
         return self.execute(context)
 
     def draw(self, context):
-        prefs = context.preferences.addons.get(__name__)
-        limit = prefs.preferences.resolution_caution if prefs else 1024
         col = self.layout.column(align=True)
-        col.label(text=f"Caution: Resolution exceeds {limit}.", icon='ERROR')
-        col.label(text="High resolution values may lead to")
-        col.label(text="excessively long bake times.")
-        col.separator()
+        # TODO-29: no-camera warning — surfaces here so the user can cancel
+        # before exporting JSONs with render_simulation_result=True that would
+        # produce black/empty renders.
+        if getattr(self, "_warn_cam", False):
+            col.label(text="No camera in scene — renders will be black/fail.",
+                      icon='ERROR')
+            col.label(text="(Add a camera, or uncheck 'Render Simulation Result')")
+            col.separator()
+        if getattr(self, "_warn_res", False):
+            prefs = context.preferences.addons.get(__name__)
+            limit = prefs.preferences.resolution_caution if prefs else 1024
+            col.label(text=f"Caution: Resolution exceeds {limit}.", icon='ERROR')
+            col.label(text="High resolution values may lead to")
+            col.label(text="excessively long bake times.")
+            col.separator()
         col.label(text="Click OK to export anyway, or Cancel to go back.")
 
     def execute(self, context):
@@ -3093,14 +3121,25 @@ class SMOKE_OT_run_batch(bpy.types.Operator):
         "Progress is tracked in the panel below."
     )
 
-    # No invoke/draw — Run Batch goes straight to execute.  Removed in v0.4.1
-    # because Export Batch flips bpy.data.is_dirty (it writes to job_log_items
-    # and the batch_* properties), so the "save before running" dialog fired on
-    # essentially every Run Batch immediately after Export — the warning was
-    # noise far more often than it was useful.  Trade-off: a user who edited
-    # the scene (camera, emitter density, etc.) since the last save will see
-    # the batch run against the LAST SAVED state of the .blend; that's the
-    # expected scripted-batch behaviour anyway (jobs reference the path on disk).
+    # The save-before-batch dialog was removed in v0.4.1 (Export Batch flips
+    # is_dirty, so it fired on almost every Run — pure noise).  TODO-29 added
+    # a NARROWER invoke/draw that only triggers on the genuine-failure case:
+    # rendering is on but the scene has no camera (renders will be black).
+
+    def invoke(self, context, event):
+        s = context.scene.smoke_settings
+        if s.render_simulation_result and not _scene_has_camera(context.scene):
+            return context.window_manager.invoke_props_dialog(self, width=420)
+        return self.execute(context)
+
+    def draw(self, context):
+        col = self.layout.column(align=True)
+        col.label(text="No camera in scene — renders will be black/fail.",
+                  icon='ERROR')
+        col.label(text="(Add a camera, or uncheck 'Render Simulation Result'")
+        col.label(text=" and re-export as a bake-only batch)")
+        col.separator()
+        col.label(text="Click OK to run anyway, or Cancel to abort.")
 
     def execute(self, context):
         s           = context.scene.smoke_settings
