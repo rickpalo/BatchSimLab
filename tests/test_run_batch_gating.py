@@ -278,3 +278,43 @@ class TestJobLogPhaseAwareStatus:
         # Distinct icon from IN_PROGRESS so the user sees the phase change.
         assert icons['RENDERING'] != icons['IN_PROGRESS']
         assert prefix['RENDERING'] != prefix['IN_PROGRESS']
+
+
+class TestRenderPhaseFastFail:
+    """TODO-34: render-phase early-exit when bake didn't leave a usable cache,
+    plus wipe the partial cache so auto-retry takes the FULL-bake path."""
+    def _src(self):
+        path = os.path.join(os.path.dirname(__file__), "..",
+                            "scripts", "SmokeSimLab", "smoke_worker.py")
+        with open(path, encoding="utf-8") as fh:
+            return fh.read()
+
+    def test_gated_on_render_phase_only(self):
+        # Only the render-phase process should bail — single-pass (`both`) and
+        # the bake-phase process own their own cache decisions.
+        src = self._src()
+        # Find the TODO-34 block opener.
+        assert "TODO-34: render-phase fast-fail." in src
+        assert "if not do_bake:" in src
+
+    def test_checks_bake_done_for_error(self):
+        src = self._src()
+        assert '_r34_bake_done = os.path.join(_r34_jobs_dir, _r34_stem + ".bake.done")' in src
+        # Missing bake.done is treated as failure (defensive default True).
+        assert "_r34_bake_failed = True" in src
+        assert '"error" in fh.read().lower()' in src
+
+    def test_checks_cache_frame_completeness(self):
+        src = self._src()
+        assert "_count_data_files(cache_dir)" in src
+        assert "_r34_expected = frame_end - frame_start + 1" in src
+        assert "_r34_incomplete = (_r34_existing < _r34_expected)" in src
+
+    def test_wipes_cache_to_force_full_rebake(self):
+        src = self._src()
+        # shutil.rmtree on the cache dir forces auto-retry's FULL bake path
+        # (use_existing_cache + empty dir → FULL).
+        assert "shutil.rmtree(cache_dir)" in src
+        # Then exit with non-zero so the .bat / addon counts the job failed
+        # and auto-retry triggers.
+        assert "sys.exit(1)" in src.split("TODO-34")[1].split("---")[0]

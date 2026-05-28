@@ -14,7 +14,7 @@ Applies fluid parameters, bakes, renders playblast MP4 + final still PNG,
 appends a row to Renders/results.csv, then quits Blender.
 """
 
-WORKER_VERSION = "0.4.5"
+WORKER_VERSION = "0.4.8"
 
 import bpy
 import sys
@@ -355,6 +355,47 @@ _dlog(f"cfg: {cfg}")
 _log(f"[{name}] Cache dir: {cache_dir}")
 _log(f"[{name}] Render dir: {render_dir}")
 _log(f"[{name}] Render mode: {render_mode}")
+
+# ---------------------------------------------------------------------------
+# TODO-34: render-phase fast-fail.  In the two-pass pipeline, if the bake phase
+# crashed or left an incomplete cache, the render phase has nothing useful to
+# render — bail BEFORE the heavy setup (GPU init, presave dance, etc.) and
+# wipe the partial cache so auto-retry takes the FULL-bake path instead of
+# wasting time on a RESUME-from-1 of broken data.
+# ---------------------------------------------------------------------------
+if not do_bake:
+    _r34_jobs_dir  = os.path.dirname(job_path)
+    _r34_stem      = os.path.splitext(os.path.basename(job_path))[0]
+    _r34_bake_done = os.path.join(_r34_jobs_dir, _r34_stem + ".bake.done")
+
+    _r34_bake_failed = True   # treat "no bake.done" as failure
+    if os.path.isfile(_r34_bake_done):
+        try:
+            with open(_r34_bake_done, "r", encoding="utf-8") as fh:
+                _r34_bake_failed = "error" in fh.read().lower()
+        except OSError:
+            pass
+
+    _r34_existing = _count_data_files(cache_dir) if os.path.isdir(cache_dir) else 0
+    _r34_expected = frame_end - frame_start + 1
+    _r34_incomplete = (_r34_existing < _r34_expected)
+
+    if _r34_bake_failed or _r34_incomplete:
+        _reasons = []
+        if _r34_bake_failed:
+            _reasons.append("bake phase reported error / missing .bake.done")
+        if _r34_incomplete:
+            _reasons.append(f"cache has {_r34_existing}/{_r34_expected} frames")
+        _log(f"[{name}] phase=render — skipping render: {'; '.join(_reasons)}.")
+        _log(f"[{name}] Wiping cache so auto-retry forces a full re-bake "
+             f"(instead of a RESUME-from-1 of broken data).")
+        try:
+            if os.path.isdir(cache_dir):
+                shutil.rmtree(cache_dir)
+        except OSError as _e:
+            _log(f"[{name}] WARNING: cache wipe failed ({_e}) — "
+                 f"retry may RESUME from partial cache.")
+        sys.exit(1)
 
 # ---------------------------------------------------------------------------
 # Locate domain object and fluid modifier

@@ -4,6 +4,64 @@ Items to address once file synchronization catches up (~5,000 PNGs behind as of 
 
 ---
 
+## TODO-35: Evaluate background save-`.blend` + open resume approach — **OPEN**
+
+**Filed 2026-05-28.** User proposal:
+1. Save the existing cache files in a tmp directory.
+2. Change `d.cache_directory` in the .blend to point at that tmp directory.
+3. Save as a tmp `.blend`.
+4. Open the tmp `.blend` (fresh Blender) and resume baking.
+
+**Have we tried this exact sequence? NO — close but no.** What's been done:
+
+| Attempt | Reload? | cache_directory at LOAD time | Outcome |
+|---|---|---|---|
+| **v0.2.32 BUG-010 attempt 3** | Yes, windowed | populated dir (files merged back) | **Hung** — windowed `open_mainfile` + `bake_all` deadlock (no event-loop pump). Removed in v0.3.1. Never confirmed whether resume would have worked. |
+| **bg_resume_probe.py (v0.3.0)** | **No** — same-process bake | populated dir (files merged back after assign) | **REBAKED-FROM-1** — Mantaflow doesn't detect files added AFTER `cache_directory` assignment. The `init` scan ran on the empty dir at assign-time. |
+| **Your proposal** | **Yes, in background** (bake phase is `--background`) | populated dir (files moved there BEFORE the .blend was saved) | **Untested.** At LOAD time, Mantaflow's init scan runs on the already-populated dir → should detect the existing baked frames and set its internal "last baked frame" → real resume. |
+
+**Why it might actually work where the others didn't:**
+- `--background` doesn't have the windowed event-loop deadlock that killed v0.2.32.
+- The probe's failure was order-of-operations (assign-then-add-files); your
+  proposal flips it (add-files-then-save-then-load) so Mantaflow's init scan
+  sees the files at the right moment.
+- The bake phase is already `--background` (v0.3.5 launcher decision), so this
+  fits the existing two-pass architecture naturally.
+
+**Recommended next step:** write a focused `bg_resume_probe_v2.py` that does
+**exactly** the user's 4 steps and reports via mtime whether prior frames were
+preserved.  If it succeeds, the worker's RESUME branch can adopt this approach
+and BUG-010 (re-bake from frame 1 on resume) finally gets a real fix.
+
+**Files (if it works):** new helper in `smoke_worker.py` RESUME branch;
+re-establish `obj`/`d` after `open_mainfile`; clean up the tmp `.blend`.
+
+**Risk:** moderate.  open_mainfile mid-script changes the live bpy state — same
+class of issue as the v0.2.32 hang, but in `--background` the failure mode
+should be a clean error rather than a deadlock.
+
+---
+
+## TODO-34: Render-phase fast-fail when bake didn't produce a usable cache — **DONE** (v0.4.8)
+
+**Filed + Resolved 2026-05-28.**  In the two-pass pipeline, if the bake phase
+crashed or left a partial cache, the render phase used to start its (expensive)
+setup, hit the post-bake guard, and only then exit — wasting the launcher
+overhead + GPU init.  Now the render-phase worker bails BEFORE the heavy setup:
+
+1. Reads `<stem>.bake.done`; if missing or contains "error" → bail.
+2. Counts `<cache_dir>` data files; if `< (frame_end - frame_start + 1)` → bail.
+3. Before exiting (1), `shutil.rmtree(cache_dir)` wipes the partial cache so
+   auto-retry's single-pass `--phase=both` sees an EMPTY cache → forces the
+   FULL-bake decision (avoids RESUME-from-1 of broken data).
+4. `sys.exit(1)` → `.render.done` reports error → auto-retry triggers.
+
+Single-pass (`--phase=both`) and the bake phase are unaffected — they own their
+own cache decisions.  Tests: `tests/test_run_batch_gating.py::TestRenderPhaseFastFail`
+(4).  Worker → 0.4.8; re-export required.
+
+---
+
 ## TODO-33: Render Animation checkbox — still-only mode — **DONE** (v0.4.5)
 
 **Filed 2026-05-28.** New `render_animation` BoolProperty (default True) below
