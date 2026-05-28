@@ -1,9 +1,42 @@
-# Background-Bake / Render-Once Pipeline — Scoped Design (DRAFT)
+# Background-Bake / Two-Phase Pipeline — Design + Build Plan
 
-Status: **scoping only — not started.** Captures the idea, scope, and open
-questions so we can decide later. Resume is explicitly **out of scope** (the
-probe proved Mantaflow re-bakes from frame 1 in background too — see
-`BUG_TRACKER.md` BUG-010 and memory `background-bake-plan`).
+Status: **APPROVED, building incrementally (2026-05-27).** Resume is out of scope
+(Mantaflow re-bakes from frame 1 in background too — see `BUG_TRACKER.md`
+BUG-010 and memory `background-bake-plan`).
+
+## LOCKED DECISIONS (2026-05-27)
+- **Render phase = per-job processes** (NOT one windowed session). Bake all jobs
+  headless, then render each job as its own process (EEVEE windowed / Cycles
+  headless). Keeps per-job crash isolation + existing crash detection; avoids the
+  in-session-state-hygiene risk. Trade-off accepted: EEVEE opens a window per
+  render job (no "load UI once" saving).
+- **Replace the current single-pass flow** (no opt-in toggle). git history
+  (v0.3.3 = last single-pass version) is the fallback if the new flow misbehaves.
+
+## BUILD PLAN (incremental; each increment keeps the tree working)
+- **Increment 1 — worker `--phase {bake,render,both}`** (default `both` = exact
+  current behavior). Refactor: shared setup (domain, params, cache_frame range,
+  density, text, cache-search + presave/point) → bake (if phase in bake/both) →
+  render+csv (if phase in render/both) → perf (per phase) → sentinels. With
+  export still single-pass (no --phase passed), `both` runs identically to today.
+  SAFE: current flow untouched until increment 3.
+- **Increment 2 — launcher `--phase`**: pass `--phase` through to the worker;
+  force `--background` for the bake phase regardless of render_mode; keep
+  windowed-for-EEVEE only for the render phase. Not called by export yet → SAFE.
+- **Increment 3 — export_batch two-pass .bat** (FLIPS the flow): emit a BAKE
+  pass (all jobs, `--phase=bake`, background) then a RENDER pass (all jobs,
+  `--phase=render`, per-engine mode). Rework `.done`/`.worker_done`/`.crashed`
+  sentinels to be per-phase, and the addon poll/progress/summary to understand
+  two phases. RISKY increment — most of the addon's per-job-does-everything
+  assumptions live here (`_find_running_log`, progress bars, `_compute_batch_summary`).
+- **Increment 4 — UI/progress polish**: two-phase progress ("Baking job X/N",
+  then "Rendering job X/N"); Job Log phase indicator.
+
+## Open implementation notes
+- Render phase must still point `d.cache_directory` at the job cache to load the
+  VDBs for rendering — same presave/merge wipe-protection as the bake path
+  (effectively the SKIP-BAKE path, then render).
+- Sentinel/poll rework (increment 3) is the crux; design it before coding.
 
 ## Why (the wins — all independent of resume)
 - **Reliability:** background `bake_all()` is synchronous and never hits the
