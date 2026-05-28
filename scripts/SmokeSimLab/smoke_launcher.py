@@ -30,7 +30,7 @@ Behaviour
 No third-party dependencies — stdlib + tasklist.exe (built into Windows).
 """
 
-LAUNCHER_VERSION = "0.3.2"
+LAUNCHER_VERSION = "0.3.5"
 
 import atexit
 import ctypes
@@ -299,6 +299,19 @@ def main():
     blender_exe = sys.argv[1]
     job_json    = os.path.abspath(sys.argv[2])
 
+    # Optional --phase {bake,render,both} (two-phase pipeline). Default "both"
+    # reproduces the original single-pass run.
+    phase = "both"
+    _rest = sys.argv[3:]
+    for _i, _t in enumerate(_rest):
+        if _t.startswith("--phase="):
+            phase = _t.split("=", 1)[1]
+        elif _t == "--phase" and _i + 1 < len(_rest):
+            phase = _rest[_i + 1]
+    phase = phase.strip().lower()
+    if phase not in ("bake", "render", "both"):
+        phase = "both"
+
     with open(job_json, encoding="utf-8") as fh:
         job_data = json.load(fh)
 
@@ -330,19 +343,23 @@ def main():
     # smoke_worker.py is exported to output_path alongside run_smoke_batch.bat
     worker_py = os.path.join(output_path, "smoke_worker.py")
 
-    if render_mode == "EEVEE":
+    # Bake never needs a window (engine-independent) — always headless, even for
+    # EEVEE jobs.  Only the render phase of an EEVEE job needs the visible window.
+    _windowed = (render_mode == "EEVEE" and phase != "bake")
+    _phase_args = [] if phase == "both" else ["--phase", phase]
+    if _windowed:
         cmd = [blender_exe, blend_file,
                "--window-geometry", "0", "0", "100", "100",
                "--factory-startup",
                "--python", worker_py,
-               "--", job_json]
+               "--", job_json] + _phase_args
     else:
         cmd = [blender_exe, blend_file,
                "--background", "--factory-startup",
                "--python", worker_py,
-               "--", job_json]
+               "--", job_json] + _phase_args
 
-    _dlog(f"startup: launcher={LAUNCHER_VERSION}  addon={_job_addon_version}  "
+    _dlog(f"startup: launcher={LAUNCHER_VERSION}  addon={_job_addon_version}  phase={phase}  "
           f"python={sys.version.split()[0]}  platform={sys.platform}  "
           f"blender_exe={blender_exe!r}  job_json={job_json!r}")
     _dlog(f"cmd: {cmd}")

@@ -592,3 +592,23 @@ class TestCrashLogBlenderVersion:
             src = fh.read()
         assert 'fh.write(f"Blender: {_bl_ver or' in src
         assert "def _save_crash_log(jobs_dir, job_stem, launch_time=None, blender_exe=None)" in src
+
+
+class TestLauncherPhase:
+    """Increment 2: launcher accepts --phase, forces background for the bake
+    phase, and passes --phase through to the worker."""
+    def _src(self):
+        with open(os.path.join(_SCRIPTS_DIR, "smoke_launcher.py"), encoding="utf-8") as fh:
+            return fh.read()
+
+    def test_parses_phase(self):
+        src = self._src()
+        assert 'phase = "both"' in src
+        assert 'if phase not in ("bake", "render", "both"):' in src
+
+    def test_bake_phase_forces_background(self):
+        # EEVEE only gets a window when NOT in the bake phase.
+        assert '_windowed = (render_mode == "EEVEE" and phase != "bake")' in self._src()
+
+    def test_passes_phase_to_worker(self):
+        assert '_phase_args = [] if phase == "both" else ["--phase", phase]' in self._src()
