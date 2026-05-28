@@ -179,3 +179,31 @@ class TestWorkerFinalStillCopy:
         assert "if not _can_copy:" in src
         # And copy failures explicitly clear the flag so the render fires.
         assert "_can_copy = False" in src
+
+
+class TestRenderAnimationGate:
+    """TODO-33: still-only mode — Render Animation off skips the PNG sequence
+    + MP4 but still produces <name>.png via the final-still path."""
+    def _src(self):
+        path = os.path.join(os.path.dirname(__file__), "..",
+                            "scripts", "SmokeSimLab", "smoke_worker.py")
+        with open(path, encoding="utf-8") as fh:
+            return fh.read()
+
+    def test_worker_reads_render_animation_default_true(self):
+        # Default True preserves the original behaviour for pre-TODO-33 JSONs.
+        assert 'render_animation         = cfg.get("render_animation", True)' in self._src()
+
+    def test_animation_short_circuits_frames_to_render(self):
+        src = self._src()
+        assert "if not render_animation:" in src
+        assert "frames_to_render = set()" in src
+
+    def test_ffmpeg_gated_on_render_animation(self):
+        assert "if render_animation:" in self._src()
+
+    def test_export_writes_render_animation_field(self):
+        import inspect
+        import SmokeSimLab as ssl
+        src = inspect.getsource(ssl.export_batch)
+        assert '"render_animation":         s.render_animation' in src

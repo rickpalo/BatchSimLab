@@ -4,6 +4,28 @@ Items to address once file synchronization catches up (~5,000 PNGs behind as of 
 
 ---
 
+## TODO-33: Render Animation checkbox — still-only mode — **DONE** (v0.4.5)
+
+**Filed 2026-05-28.** New `render_animation` BoolProperty (default True) below
+*Render Simulation Result*; greyed out when rendering is off.  When unchecked,
+the worker skips the per-frame PNG sequence + ffmpeg MP4 mux and renders only
+the final still PNG (`<name>.png`).  Useful when you only need the result image
+and don't want to spend N×frame render time on the animation.
+
+**Resolution (v0.4.5):**
+- `SmokeSettings.render_animation` BoolProperty + UI row gated on
+  `render_simulation_result`; reset-on-load default True.
+- `export_batch` writes `render_animation` into each job JSON.
+- Worker reads it (default True for pre-TODO-33 JSONs); when False:
+  - empties `frames_to_render` → animation render loop is a no-op;
+  - `if render_animation:` gates the ffmpeg block;
+  - the TODO-32 final-still copy naturally falls back to rendering (`frame_end`
+    isn't in `frames_to_render`) so `<name>.png` is still produced.
+- Tests: `tests/test_run_batch_gating.py::TestRenderAnimationGate` (4).
+- Worker → 0.4.5; re-export required.
+
+---
+
 ## TODO-32: Final still re-renders frame_end with identical settings — just copy it — **DONE** (v0.4.4)
 
 **Resolution (v0.4.4):** worker's "Final still" block now `shutil.copy2`'s

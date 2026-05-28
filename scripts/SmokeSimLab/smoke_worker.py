@@ -14,7 +14,7 @@ Applies fluid parameters, bakes, renders playblast MP4 + final still PNG,
 appends a row to Renders/results.csv, then quits Blender.
 """
 
-WORKER_VERSION = "0.4.4"
+WORKER_VERSION = "0.4.5"
 
 import bpy
 import sys
@@ -318,6 +318,10 @@ addon_version      = cfg.get("addon_version", "?")
 # Bake-only mode (TODO-26): when False, skip the MP4 + still render entirely.
 # Defaults True so pre-TODO-26 job JSONs still render as before.
 render_simulation_result = cfg.get("render_simulation_result", True)
+# Still-only mode (TODO-33): when False (and rendering is on), skip the PNG
+# sequence + MP4 — just render the final still PNG.  Defaults True to preserve
+# the original "render animation + still" behaviour for pre-TODO-33 job JSONs.
+render_animation         = cfg.get("render_animation", True)
 
 # Emitter densities pre-computed at export time: {object_name: scaled_density}
 emitter_densities       = cfg.get("emitter_densities", {})
@@ -881,7 +885,15 @@ else:
     # Frames in rebaked_frames are always re-rendered even if a PNG exists, because
     # the new bake may produce different smoke than the render that was previously made.
     frames_to_render = set(range(scene.frame_start, frame_end + 1))
-    if use_placeholders:
+    if not render_animation:
+        # TODO-33: still-only mode — skip the PNG sequence + MP4; the final
+        # still below renders the last frame on its own.  The TODO-32 copy
+        # gate naturally falls back to a render (frame_end not in
+        # frames_to_render) so <name>.png is still produced.
+        _log(f"[{name}] Render Animation disabled — skipping MP4 sequence, "
+             f"still-only render.")
+        frames_to_render = set()
+    elif use_placeholders:
         existing_frames = set()
         for frame_num in frames_to_render:
             if frame_num in rebaked_frames:
@@ -917,23 +929,26 @@ else:
     else:
         _log(f"[{name}] No frames to render (all exist or skipped)")
 
-    # Convert PNG sequence to MP4 using FFmpeg
-    ffmpeg_cmd = [
-        "ffmpeg",
-        "-y",
-        "-framerate", str(scene.render.fps),
-        "-i", os.path.join(effective_frames_dir, "frame_%04d.png"),
-        "-c:v", "libx264",
-        "-pix_fmt", "yuv420p",
-        mp4
-    ]
-    try:
-        subprocess.run(ffmpeg_cmd, check=True, capture_output=True)
-        _log(f"[{name}] MP4 conversion complete -> {mp4}")
-    except subprocess.CalledProcessError as e:
-        _log(f"[{name}] FFmpeg conversion failed: {e.stderr.decode()}")
-    except FileNotFoundError:
-        _log(f"[{name}] FFmpeg not found on system PATH. PNG frames saved to {png_sequence_dir}")
+    # Convert PNG sequence to MP4 using FFmpeg — only when the animation
+    # sequence actually exists (skipped in still-only mode or when no frames
+    # were rendered this run AND none pre-existed).
+    if render_animation:
+        ffmpeg_cmd = [
+            "ffmpeg",
+            "-y",
+            "-framerate", str(scene.render.fps),
+            "-i", os.path.join(effective_frames_dir, "frame_%04d.png"),
+            "-c:v", "libx264",
+            "-pix_fmt", "yuv420p",
+            mp4
+        ]
+        try:
+            subprocess.run(ffmpeg_cmd, check=True, capture_output=True)
+            _log(f"[{name}] MP4 conversion complete -> {mp4}")
+        except subprocess.CalledProcessError as e:
+            _log(f"[{name}] FFmpeg conversion failed: {e.stderr.decode()}")
+        except FileNotFoundError:
+            _log(f"[{name}] FFmpeg not found on system PATH. PNG frames saved to {png_sequence_dir}")
 
     # ---- Final still — last frame only ----
     # TODO-32 (v0.4.4): if the animation sequence already rendered frame_end

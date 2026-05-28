@@ -43,7 +43,7 @@ Requires Blender 4.x (tested on 4.5.5 and 5.1.1) on Windows 10/11.  May work on 
 bl_info = {
     "name":        "SmokeSimLab",
     "author":      "Rick Palo",
-    "version":     (0, 4, 4),
+    "version":     (0, 4, 5),
     "blender":     (4, 0, 0),
     "location":    "View3D > Sidebar > SmokeLab",
     "description": "Batch smoke simulation parameter sweeper with CSV logging",
@@ -72,7 +72,7 @@ DOCS_URL = "https://github.com/rickpalo/SmokeSimLab"
 # Expected version strings in the helper files exported to the output folder.
 # When Run Batch detects a mismatch it warns the user to re-run Export Batch.
 # Keep these in sync with WORKER_VERSION / LAUNCHER_VERSION in those files.
-_EXPECTED_WORKER_VERSION   = "0.4.4"
+_EXPECTED_WORKER_VERSION   = "0.4.5"
 _EXPECTED_LAUNCHER_VERSION = "0.4.0"
 
 
@@ -1019,6 +1019,7 @@ def export_batch(context):
             "render_mode":    s.render_mode,
             "render_samples": s.render_samples,
             "render_simulation_result": s.render_simulation_result,
+            "render_animation":         s.render_animation,
             "render_resolution_x": context.scene.render.resolution_x,
             "render_resolution_y": context.scene.render.resolution_y,
             "use_placeholders": s.use_placeholders,
@@ -1559,6 +1560,16 @@ class SmokeSettings(bpy.types.PropertyGroup):
         ),
         default=True,
         update=_on_render_sim_result_update,
+    )
+    render_animation: bpy.props.BoolProperty(
+        name="Render Animation",
+        description=(
+            "When enabled, render the full PNG sequence and mux it to MP4. "
+            "Disable to render only the final still PNG (skips the per-frame "
+            "render pass — useful when you only need the result image). "
+            "Has no effect when Render Simulation Result is off"
+        ),
+        default=True,
     )
 
     # ── Job Log ───────────────────────────────────────────────────────────────
@@ -4049,6 +4060,12 @@ class SMOKE_PT_panel(bpy.types.Panel):
         layout.prop(s, "render_simulation_result", text="Render Simulation Result")
         _render_on = s.render_simulation_result
 
+        # Render Animation (TODO-33): still-only mode skips the PNG sequence + MP4.
+        # Only meaningful when rendering is on at all.
+        row_anim = layout.row()
+        row_anim.enabled = _render_on
+        row_anim.prop(s, "render_animation", text="Render Animation")
+
         row = layout.row()
         row.enabled = _render_on
         row.prop(s, "render_mode",    text="Render Engine")
@@ -4277,6 +4294,7 @@ def _reset_on_load(dummy=None):
         s.use_existing_cache = False
         s.auto_retry_failed  = False
         s.render_simulation_result = True
+        s.render_animation   = True
         s.show_results       = False
 
         # ── Utilities ─────────────────────────────────────────────────────────
