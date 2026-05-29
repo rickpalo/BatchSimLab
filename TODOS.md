@@ -4,6 +4,36 @@ Items to address once file synchronization catches up (~5,000 PNGs behind as of 
 
 ---
 
+## TODO-37: Reorder Gas Parameters to match Blender's tab order — **OPEN** (v0.6.0)
+
+**Filed 2026-05-29.** Cosmetic UI fix.  The Gas Parameters section currently
+draws controls in the order **Vorticity → Buoyancy Density → Buoyancy Heat**,
+but Blender's native Fluid Domain panel shows them as **Buoyancy Density →
+Buoyancy Heat → Vorticity**.  Match the native order so the addon UI is
+visually consistent with the rest of Blender.
+
+**Files:** `__init__.py` — `_gas_ui()` at the three `_sub_param_ui()` calls
+(currently around lines 3969-3971).  Swap the call order:
+
+```python
+_sub_param_ui(box, s, "alpha",     "Buoyancy Density")  # was 2nd
+_sub_param_ui(box, s, "beta",      "Buoyancy Heat")     # was 3rd
+_sub_param_ui(box, s, "vorticity", "Vorticity")         # was 1st
+```
+
+**Risk:** zero.  The underlying property names (vorticity / alpha / beta)
+and their roles in job-dict serialisation, sweep order, CSV column order,
+make_name() output, and Limited Combinations grouping are all unaffected
+— this is purely a visual reorder of three UI rows.  Tests that assert
+sweep behaviour (`test_job_generation.py`) and naming
+(`test_job_generation.py::TestMakeName`) reference parameter names, not
+draw order, so they will continue to pass unchanged.
+
+**Bundle with:** v0.6.0's Monitor Existing Jobs / Resume bar refactor
+(TODO-31, TODO-36) — they're all UI-side changes.
+
+---
+
 ## TODO-36: Monitor Existing Jobs — progress count wildly off mid-bake — **OPEN**
 
 **Filed 2026-05-28.** User switched the output folder back to AutoTest and
