@@ -6,7 +6,7 @@ import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
 
-from SmokeSimLab import _count_png_frames, _find_running_log, _format_eta
+from SmokeSimLab import _count_png_frames, _find_running_log, _format_eta, _STAGES
 
 # Regression: _format_eta must never produce negative strings.
 
@@ -298,3 +298,123 @@ class TestFindRunningLog:
         result = _find_running_log(str(jobs_dir))
         assert result is not None
         assert result[0] == "job_0001_retry.log"
+
+
+# ---------------------------------------------------------------------------
+# _STAGES vs worker log strings  (v0.5.5 regression guard)
+# ---------------------------------------------------------------------------
+
+_WORKER_PATH = os.path.join(
+    os.path.dirname(__file__), "..", "scripts", "SmokeSimLab", "smoke_worker.py"
+)
+
+
+def _worker_src():
+    with open(_WORKER_PATH, encoding="utf-8") as fh:
+        return fh.read()
+
+
+class TestStagesMatchWorkerLog:
+    """v0.5.5: every _STAGES keyword must actually appear in the worker's log
+    output, otherwise the progress bar's text gets stuck on whatever stage
+    last matched.
+
+    This was a real bug: v0.5.0 changed the bake-start log line from
+    "Baking..." to "Baking (MODULAR resume — bake_data)..." (and the FULL
+    variant).  Neither contains the substring "Baking..." — so the stage
+    never advanced.  FULL bakes were stuck on "Clearing cache" for the
+    entire bake (the previous match), and SKIP bakes never moved past
+    "Starting".
+
+    These tests assert each _STAGES keyword is present somewhere in the
+    worker source so a future log-message rewrite can't silently break
+    progress tracking again.
+    """
+
+    def test_every_stage_keyword_appears_in_worker(self):
+        """Each (keyword, label, completed) entry must match SOMETHING the
+        worker actually logs.  Otherwise the stage is dead."""
+        src = _worker_src()
+        # Exceptions: these keywords are aspirational placeholders the
+        # worker doesn't (currently) log directly.  Listed so the test
+        # doesn't fail on them, but with a reason that documents why.
+        # If you want one of these to work, either add the matching log
+        # line to smoke_worker.py or drop the entry from _STAGES.
+        _ALLOWED_MISSING = {
+            "Setting up cache",   # purely aspirational; bake doesn't log this
+                                  # (no separate "setup" phase log line).
+        }
+        missing = []
+        for keyword, _label, _completed in _STAGES:
+            if keyword in _ALLOWED_MISSING:
+                continue
+            if keyword not in src:
+                missing.append(keyword)
+        assert not missing, (
+            f"_STAGES keywords not found in smoke_worker.py: {missing}.\n"
+            f"This means the progress bar will get stuck on the previous "
+            f"stage's label when the worker reaches that phase. Either add "
+            f"a matching _log() call to smoke_worker.py or update _STAGES "
+            f"to a keyword the worker actually emits."
+        )
+
+    def test_baking_keyword_uses_paren_form(self):
+        """v0.5.0 regression guard: the Baking stage's keyword must be the
+        paren-prefix "Baking (" form, not the obsolete "Baking..." string."""
+        bake_stages = [(kw, lbl) for kw, lbl, _c in _STAGES
+                       if lbl == "Baking simulation"]
+        assert len(bake_stages) == 1, (
+            f"expected exactly one 'Baking simulation' _STAGES entry, "
+            f"got {bake_stages}"
+        )
+        kw, _ = bake_stages[0]
+        assert kw == "Baking (", (
+            f"v0.5.5: 'Baking simulation' keyword must be 'Baking (' to "
+            f"match v0.5.0's 'Baking (MODULAR resume — bake_data)...' / "
+            f"'Baking (MODULAR full — bake_data)...' log lines.  Got: {kw!r}"
+        )
+
+    def test_skip_bake_keyword_uses_decision_form(self):
+        """v0.5.5: the 'Using existing cache' stage's keyword must match
+        the worker's actual SKIP BAKE decision log line."""
+        skip_stages = [(kw, lbl) for kw, lbl, _c in _STAGES
+                       if lbl == "Using existing cache"]
+        assert len(skip_stages) == 1
+        kw, _ = skip_stages[0]
+        assert kw == "Decision : SKIP BAKE", (
+            f"v0.5.5: 'Using existing cache' keyword must be "
+            f"'Decision : SKIP BAKE' to match the worker's SKIP BAKE "
+            f"decision log line.  Got: {kw!r}"
+        )
+
+    def test_stage_label_advancement_with_sample_logs(self):
+        """End-to-end: feed sample log tails through the same find() loop
+        the poller uses, assert the label advances as expected."""
+        # Sample log fragments (truncated tails from real runs).
+        FULL_BAKE_TAIL = (
+            "[J] Job started.\n"
+            "[J] Freeing previous cache and baking from scratch...\n"
+            "[J] Baking (MODULAR full — bake_data)...\n"
+        )
+        SKIP_BAKE_TAIL = (
+            "[J] Job started.\n"
+            "[J] --- Bake decision ---\n"
+            "[J]   Decision : SKIP BAKE — all 500 frames confirmed\n"
+        )
+        RESUME_BAKE_TAIL = (
+            "[J] Job started.\n"
+            "[J] Baking (MODULAR resume — bake_data)...\n"
+        )
+
+        def _stage_for(tail):
+            label = "Starting"
+            best = -1
+            for kw, lbl, _c in _STAGES:
+                pos = tail.find(kw)
+                if pos > best:
+                    best, label = pos, lbl
+            return label
+
+        assert _stage_for(FULL_BAKE_TAIL)   == "Baking simulation"
+        assert _stage_for(SKIP_BAKE_TAIL)   == "Using existing cache"
+        assert _stage_for(RESUME_BAKE_TAIL) == "Baking simulation"

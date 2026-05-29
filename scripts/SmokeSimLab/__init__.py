@@ -43,7 +43,7 @@ Requires Blender 4.x (tested on 4.5.5 and 5.1.1) on Windows 10/11.  May work on 
 bl_info = {
     "name":        "SmokeSimLab",
     "author":      "Rick Palo",
-    "version":     (0, 5, 4),
+    "version":     (0, 5, 5),
     "blender":     (4, 0, 0),
     "location":    "View3D > Sidebar > SmokeLab",
     "description": "Batch smoke simulation parameter sweeper with CSV logging",
@@ -2003,12 +2003,24 @@ class SMOKE_OT_remove_value(bpy.types.Operator):
 # Four major sub-tasks: Setup, Baking, Animation, Still
 # Each row: (log_keyword, bar-3a label, completed_subtasks_when_detected)
 # completed_subtasks = number of major sub-tasks DONE when this keyword first appears.
+#
+# v0.5.5: two keywords updated to match the actual worker log output —
+#   * "Baking..." → "Baking (" — v0.5.0 changed the worker's bake-start log
+#     line to "Baking (MODULAR resume — bake_data)..." or
+#     "Baking (MODULAR full — bake_data)..."; neither contains the literal
+#     substring "Baking..." so the stage never advanced.  Result: FULL bakes
+#     were stuck on "Clearing cache" (the previous match) for the whole bake.
+#   * "Use Existing Cache enabled" → "Decision : SKIP BAKE" — the worker has
+#     never logged the former (looks like an artifact from an older addon
+#     version); SKIP BAKE jobs were stuck on "Starting" because no later
+#     keyword matched.  The Decision line is reliably logged at the moment
+#     the worker picks SKIP BAKE.
 _STAGES = (
     ("Job started",                "Starting",              0),
     ("Setting up cache",           "Setting up cache",      0),
     ("Freeing previous cache",     "Clearing cache",        0),
-    ("Use Existing Cache enabled", "Using existing cache",  2),  # setup + bake both done
-    ("Baking...",                  "Baking simulation",     1),  # setup done
+    ("Decision : SKIP BAKE",       "Using existing cache",  2),  # setup + bake both done
+    ("Baking (",                   "Baking simulation",     1),  # setup done
     ("Bake complete",              "Verifying cache",       2),  # baking done
     ("Rendering animation",        "Rendering animation",   2),
     ("frame sequence complete",    "Animation complete",    2),

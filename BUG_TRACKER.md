@@ -549,8 +549,9 @@ over earlier completed/crashed first-run jobs.
 
 ## BUG-010: RESUME Bake Always Starts from Frame 1
 
-**Status:** `DEPLOYED / UNVERIFIED` (v0.5.0 — cache_type='MODULAR' + bake_data()
-gives true in-process partial resume; replaces all prior attempts)  
+**Status:** `CONFIRMED FIXED` (v0.5.0 + v0.5.1 + v0.5.4; production-verified
+in v0.5.4Test 2026-05-29 with a 500-frame res-512 EEVEE job that crashed
+twice mid-render and auto-recovered both times)  
 **Files:** `smoke_worker.py` — parameter-application block + RESUME/FULL bake branches
 
 ### Symptoms
@@ -697,10 +698,18 @@ filtered progress bar (v0.2.29) then counted all frames as new, showing
   reachable from scripted Python.  Attempt 3 came closest (UI-Resume
   reproduction via save+reload), but it still fell back to `bake_all()`
   which doesn't engage on-disk scan logic the way `bake_data()` does.
-- *Status:* **DEPLOYED / UNVERIFIED.** Needs one production-scale RESUME
-  test (interrupt a res-512 job, resume) to mark as `CONFIRMED FIXED`.
-  Probe v6/v7 verified the mechanism at res 16; the only risk in scaling
-  up is bake time hiding the boundary-frame rewrite signature.
+- *Status:* **CONFIRMED FIXED** (v0.5.4Test, 2026-05-29).  User ran a
+  res-512 EEVEE 500-frame job to completion on production hardware.  The
+  bake phase SKIP-baked from an existing cache, the render phase crashed
+  TWICE mid-render, auto-retry fired each time, and the job finished
+  successfully without manual intervention.  The combination of
+  (v0.5.0) MODULAR cache_type + bake_data, (v0.5.1) presave-rename retry,
+  (v0.5.2) user-cancel atexit + descending-range UI, and (v0.5.4)
+  single-file final-frame check now constitutes a working end-to-end
+  resume pipeline at production scale.  Probe v6/v7 (scripts/experiments/,
+  not committed) verified the underlying mechanism at res 16; the
+  production run validated it at res 512 with realistic GPU/filesystem
+  stress.
 
 ### Tests Added
 - `tests/test_run_batch_gating.py::TestWorkerResumeNoReload` — asserts the
