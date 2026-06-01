@@ -4,6 +4,81 @@ Items to address once file synchronization catches up (~5,000 PNGs behind as of 
 
 ---
 
+## TODO-44: Collapsible Output + Progress sections (UI reorg) — **OPEN** (v0.7.0, prerequisite for param expansion)
+
+**Filed 2026-05-29.** The Setup panel is getting tall.  v0.7.0 will add
+TODO-41 (Time Scale, Adaptive Time Step, CFL, Timesteps Max/Min) and
+TODO-42 (Fire Parameters section), which compound the problem.  Reorganise
+the existing rows into two collapsible sections *before* the new params
+land so they have a clean home.
+
+**Note on existing Setup section:** the **Output folder picker** at the
+top of the Setup section stays where it is — it's a path setting that
+naturally belongs with the other Setup fields (Domain, Text Objects).
+The new "Output" collapsible below has nothing to do with that picker;
+the name collision is unfortunate but accurate to the user's mental model
+(everything related to *producing output* lives here).
+
+**Section 1 — Output (collapsible, default state TBD):**
+Contains the iteration-mode block and everything currently shown between
+it and the Run Batch button:
+- Iteration Mode box (Limited Combinations / All Combinations radio)
+- "N job(s) will be created" label
+- Use Placeholders checkbox
+- Use Existing Cache checkbox
+- Automatically Retry Failed Jobs checkbox
+- Render Simulation Result checkbox
+- Render Animation checkbox
+- Render Engine + Samples row
+- Replace / Append toggle
+- Export Batch button
+- Last-export status line
+- Display Results When Finished checkbox
+- Run Batch button
+
+**Section 2 — Progress (collapsible, AUTO-EXPAND when active):**
+Contains everything currently shown after the Run Batch button:
+- Batch progress bar + "Starting" / "Bake N/M Render Y/M (D done)" text
+- Job stage bar + "Job stage X of 4 (~H min remaining)" text
+- Sub-task bar + "Bake N/M Render Y/M (D/T done)" text
+- Per-batch time remaining text ("All jobs: ~24 min remaining")
+- Batch summary lines after completion (success/failure counts)
+- Job Log UIList
+
+**Auto-expand logic for Progress section:**
+- When `_batch_is_running()` returns True → force the section open regardless
+  of the user's manual collapse state.
+- When the batch completes → leave it open (user wants to see the summary).
+- When the user clicks Run Batch on a fresh batch → expand it (in case the
+  user collapsed it after the last batch).
+- Manual collapse should be honoured ONLY when no batch is active AND no
+  summary is being displayed.
+
+**Implementation sketch:**
+- Add `show_output: BoolProperty(default=True)` and `show_progress:
+  BoolProperty(default=True)` to `SmokeSettings`.
+- Wrap each section's draw in
+  `box = layout.box(); row = box.row(align=True);
+   row.prop(s, "show_output", icon='TRIA_DOWN' if s.show_output else
+   'TRIA_RIGHT', emboss=False, text=""); row.label(text="Output"); ...
+   if s.show_output: <draw existing rows here>`.
+- For Progress auto-expand: at the top of the Progress section's draw,
+  `effective_show = s.show_progress or _batch_is_running() or s.batch_summary_line1`.
+  Use `effective_show` to gate the body; the `prop()` toggle still binds to
+  `show_progress` so the user's manual choice persists.
+
+**Risk:** moderate.  Pure UI restructuring — no behaviour or schema change.
+Tests are largely unaffected (they test logic, not draw order); some
+panel-source-level assertions in `test_settings_save_load.py` may need
+adjustment if they grep for specific consecutive `layout.prop()` lines.
+
+**Why before TODO-41/42:** if we add 8+ new param rows into the current
+flat layout, the panel becomes truly unusable.  Doing the reorg first
+creates the "Simulation Parameters" / "Output" / "Progress" tri-section
+structure into which the new params naturally fit.
+
+---
+
 ## TODO-37: Reorder Gas Parameters to match Blender's tab order — **DONE** (v0.6.0)
 
 **Filed + Resolved 2026-05-29.** Cosmetic UI fix.  The Gas Parameters section
