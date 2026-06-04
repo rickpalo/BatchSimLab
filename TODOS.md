@@ -36,6 +36,78 @@ simulation tool.  Future major versions broaden the scope:
 
 ---
 
+## TODO-48: Compact filename format — trim trailing zeros + shorter OFF indicator — **OPEN** (v0.7.1, bundle with TODO-47)
+
+**Filed 2026-06-02.**  `make_name()` produces verbose filenames that get
+long as more sweep params get added.  Two compaction wins:
+
+### A. Trim insignificant trailing digits
+Current `round(x, 2)` + string conversion produces `0.0`, `1.0`, `0.50`
+— the trailing zeros are noise when the value is already an integer or
+short decimal:
+
+| Current   | After fix |
+|-----------|-----------|
+| `V0.0`    | `V0`      |
+| `A1.0`    | `A1`      |
+| `B0.50`   | `B0.5`    |
+| `NS2.25`  | `NS2.25`  (unchanged) |
+
+**Implementation:** swap `round(x, 2)` for `f"{round(x, 3):g}"` (same
+pattern used in v0.6.0 TODO-38 for text-object precision).  `:g` format
+naturally trims trailing zeros while preserving real precision.
+
+### B. Replace `-OFF` with a single character `x`
+User suggestion (2026-06-02): "come up with a good shorthand for 'OFF';
+maybe an X".  Options to choose from when implementing:
+
+| Current   | Option 1 (`x`) | Option 2 (`X`) | Option 3 (`Off`) |
+|-----------|----------------|----------------|------------------|
+| `D-OFF`   | `Dx`           | `DX`           | `Doff`           |
+| `N-OFF`   | `Nx`           | `NX`           | `Noff`           |
+| `F-OFF`   | `Fx`           | `FX`           | `Foff`           |
+
+Recommend **lowercase `x` with no dash** (`Dx`, `Nx`, `Fx`) — most
+compact, visually distinct from value-bearing forms like `D5-Fast`
+(no value letter could be `x`), no shouting capitals.
+
+### Combined example
+Current full default-fire-off name:
+```
+R128_V0.0_A1.0_B1.0_D5-Fast_N2_NS2.0_SC2.0
+```
+After TODO-47 + TODO-48 with all v0.7.0 params at defaults:
+```
+R128_V0_A1_B1_D5-Fast_N2_NS2_SC2  (unchanged — defaults suppressed)
+```
+After with non-default fire on (BR=1.5, FS=1, FV=0.5, TMax=1.7, TIgn=1.5):
+```
+R128_V0_A1_B1_D5-Fast_N2_NS2_SC2_F-Y_BR1.5_FS1_FV0.5_TMax1.7_TIgn1.5
+```
+Same scene with fire off:
+```
+R128_V0_A1_B1_D5-Fast_N2_NS2_SC2  (no Fx suffix — match default-off)
+```
+
+Decision: append `_Fx` always when fire is OFF, OR suppress when default?
+Recommend SUPPRESS for backwards-compat with pre-v0.7.1 names.  Fire
+is OFF by default, so omitting the suffix preserves v0.6.x cache names
+exactly when nothing fire-related is touched.
+
+### Bundle with TODO-47
+Both this TODO and TODO-47 modify `make_name()`.  Ship them together
+in v0.7.1 so users only see ONE cache-name change (orphaning event)
+rather than two back-to-back.  v0.7.1 release notes should clearly
+explain that pre-v0.7.1 caches will not be matched and need to be
+re-baked OR manually renamed.
+
+**Files:** `__init__.py` — `make_name()`.  Plus regression tests
+covering the compact format, the `x` suffix, default-suppression for
+the new v0.7.0 params, and backwards-compat (no surprise renames when
+nothing's been changed from v0.6.x).
+
+---
+
 ## TODO-47: Include v0.7.0 sim params in make_name() — **OPEN** (v0.7.1)
 
 **Filed 2026-06-02.** v0.7.0 added Time Scale, Adaptive Time Step + CFL +
