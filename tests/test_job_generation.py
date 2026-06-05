@@ -592,17 +592,19 @@ class TestMakeName:
         return p
 
     def test_basic_format(self):
-        # v0.7.0 BUG-013: slow=False jobs now produce '-Fast' suffix
-        # (was bare 'D5' for backwards-compat in v0.6.0; that caused
-        # silent cache-reuse collisions with pre-v0.6.0 slow=True caches).
+        # v0.7.1 TODO-48: trailing zeros stripped (V0 not V0.0, A1 not A1.0,
+        # NS2 not NS2.0); 'Nx' / 'Dx' replace '-OFF' (but slow_dissolve=False
+        # still gets explicit '-Fast' suffix from v0.7.0 BUG-013 — only the
+        # entirely-disabled cases use 'x').
         p = self._base_params()
         name = make_name(p)
-        assert name == "R64_V0.0_A1.0_B1.0_D5-Fast_N2_NS2.0_SC2.0"
+        assert name == "R64_V0_A1_B1_D5-Fast_N2_NS2_SC2"
 
     def test_dissolve_off(self):
+        # v0.7.1 TODO-48: 'Dx' replaces 'D-OFF'
         p = self._base_params(use_dissolve=False)
         name = make_name(p)
-        assert "D-OFF" in name
+        assert "_Dx_" in name
         # When dissolve is off, no D<N> form (Fast or Slow) appears.
         assert "D5" not in name
         assert "-Fast" not in name and "-Slow" not in name
@@ -610,21 +612,24 @@ class TestMakeName:
     def test_noise_off(self):
         p = self._base_params(use_noise=False)
         name = make_name(p)
-        assert "N-OFF" in name
-        assert "N2" not in name
+        # v0.7.1 TODO-48: 'Nx' replaces 'N-OFF'.  Use endswith for an
+        # exact tail-match since 'Nx' would also appear in larger forms.
+        assert name.endswith("_Nx")
+        assert "_N2_" not in name and "_NS" not in name
 
     def test_both_off(self):
         p = self._base_params(use_dissolve=False, use_noise=False)
         name = make_name(p)
-        assert "D-OFF" in name
-        assert "N-OFF" in name
+        assert "_Dx_" in name
+        assert name.endswith("_Nx")
 
     def test_float_rounding(self):
-        # Floats are rounded to 2 decimal places in the name.
+        # v0.7.1 TODO-48: still 3-decimal precision but trailing zeros
+        # are stripped — 0.333 not 0.330; -0.667 not -0.670.
         p = self._base_params(vorticity=0.333333, alpha=-0.666667)
         name = make_name(p)
-        assert "V0.33" in name
-        assert "A-0.67" in name
+        assert "V0.333" in name
+        assert "A-0.667" in name
 
     def test_resolution_is_integer(self):
         p = self._base_params(resolution=128.0)

@@ -156,9 +156,10 @@ class TestTodo39SlowFilenameIndicator:
         )
 
     def test_dissolve_off_unaffected(self):
+        # v0.7.1 TODO-48: 'Dx' replaces 'D-OFF'.
         p = self._base_params()
         p["use_dissolve"] = False
-        assert "D-OFF" in make_name(p)
+        assert "_Dx_" in make_name(p)
         assert "Slow" not in make_name(p)
 
     def test_slow_off_uses_fast_suffix(self):

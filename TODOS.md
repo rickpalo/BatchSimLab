@@ -36,7 +36,14 @@ simulation tool.  Future major versions broaden the scope:
 
 ---
 
-## TODO-48: Compact filename format — trim trailing zeros + shorter OFF indicator — **OPEN** (v0.7.1, bundle with TODO-47)
+## TODO-48: Compact filename format — trim trailing zeros + shorter OFF indicator — **DONE** (v0.7.1)
+
+**Filed + Resolved 2026-06-02 → 2026-06-05.**  Bundled with TODO-47 in
+v0.7.1.  New `_fmt_num()` helper trims trailing zeros via
+`round(x, 3):g`; single-char `x` replaces `-OFF` (Dx / Nx / ATx).
+See RELEASING.md v0.7.1 row + `test_v071_make_name.py` (33 tests).
+
+**Original spec retained below.**
 
 **Filed 2026-06-02.**  `make_name()` produces verbose filenames that get
 long as more sweep params get added.  Two compaction wins:
@@ -108,7 +115,16 @@ nothing's been changed from v0.6.x).
 
 ---
 
-## TODO-47: Include v0.7.0 sim params in make_name() — **OPEN** (v0.7.1)
+## TODO-47: Include v0.7.0 sim params in make_name() — **DONE** (v0.7.1)
+
+**Filed + Resolved 2026-06-02 → 2026-06-05.**  Bundled with TODO-48 in
+v0.7.1.  v0.7.0 params now appear in filenames with defaults-suppressed
+format (`_TS<n>` only when time_scale ≠ 1.0, full `_F-Y_BR<n>...` block
+only when use_fire is on, etc.).  `TestNoCacheCollisions` (5 tests)
+proves every new param produces distinct filenames so cache collisions
+of the BUG-013 / BUG-014 family can't recur.  See RELEASING.md v0.7.1.
+
+**Original spec retained below.**
 
 **Filed 2026-06-02.** v0.7.0 added Time Scale, Adaptive Time Step + CFL +
 Timesteps Max/Min, plus the full Fire Parameters section.  These are

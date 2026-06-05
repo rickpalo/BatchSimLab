@@ -51,7 +51,7 @@ Requires Blender 4.x (tested on 4.5.5 and 5.1.1) on Windows 10/11.  May work on 
 bl_info = {
     "name":        "BatchSimLab",
     "author":      "Rick Palo",
-    "version":     (0, 7, 0),
+    "version":     (0, 7, 1),
     "blender":     (4, 0, 0),
     "location":    "View3D > Sidebar > BatchLab",
     "description": "Batch smoke simulation parameter sweeper with CSV logging "
@@ -904,12 +904,49 @@ def _dedupe_jobs(jobs):
     return unique
 
 
+def _fmt_num(x):
+    """Compact float formatting for filename use (v0.7.1 TODO-48 A).
+
+    Trims trailing zeros and unnecessary decimal points so:
+        0.0   → "0"
+        1.0   → "1"
+        0.50  → "0.5"
+        2.25  → "2.25"
+        0.123456789 → "0.123" (rounded to 3 decimals)
+    """
+    return f"{round(float(x), 3):g}"
+
+
+# v0.7.1 TODO-48 B: Single-character "OFF" indicator used by make_name().
+# Lowercase 'x' chosen as the most-compact distinct marker — no value
+# letter (D / N / F / etc.) could legitimately be followed by an 'x', so
+# 'Dx' / 'Nx' / 'Fx' read unambiguously as "feature off" without needing
+# the verbose "-OFF" suffix.
+_OFF_SUFFIX = "x"
+
+
 def make_name(p):
     """
     Build a human-readable filename stem from a job-parameter dict.
 
-    Format:
-        R<res>_V<vort>_A<alpha>_B<beta>_D<dissolve|OFF>_N<noise|OFF>
+    Format (v0.7.1 — compact + default-suppressed):
+        R<res>_V<vort>_A<alpha>_B<beta>_<dissolve>_<noise>[_<extras>]
+
+    Where:
+        <dissolve> = D<speed>-Slow|D<speed>-Fast  when use_dissolve else 'Dx'
+        <noise>    = N<upres>_NS<str>_SC<scale>   when use_noise    else 'Nx'
+
+    Optional extras (appended ONLY when the value differs from Blender's
+    default — keeps v0.6.x cache names unchanged when nothing v0.7.x
+    related has been touched):
+        TS<n>         time_scale != 1.0
+        ATx           use_adaptive_timesteps False (skip when True == default)
+        CFL<n>        cfl_number != 4.0 AND adaptive on
+        TMx<n>        timesteps_max != 4 AND adaptive on
+        TMn<n>        timesteps_min != 1 AND adaptive on
+        F-Y_BR<n>_FS<n>_FV<n>_TMax<n>_TIgn<n>   when use_fire (Fx omitted)
+
+    Numbers are formatted with :g via _fmt_num() — trailing zeros stripped.
 
     The name is derived purely from simulation parameters so that identical
     parameter combinations always map to the same cache directory, render
@@ -923,31 +960,73 @@ def make_name(p):
     -------
     str — filename stem without extension
     """
-    # v0.7.0 BUG-013: always include an explicit slow/fast indicator so
-    # slow=False jobs can't inherit a pre-v0.6.0 slow=True cache (which
-    # was also named "D5" before the v0.6.0 TODO-39 backwards-compat
-    # change).  v0.6.0 slow=True caches (named "D5-Slow") survive the
-    # transition unchanged; pre-v0.6.0 caches with the bare "D5" name
-    # become orphaned and must be re-baked (acceptable price for
-    # correctness — see BUG_TRACKER.md BUG-013 for the full analysis).
+    # ── Existing core params (always present) ────────────────────────────
+    # v0.7.0 BUG-013: explicit slow/fast indicator when use_dissolve.
+    # v0.7.1 TODO-48 B: 'Dx' / 'Nx' replace '-OFF' suffixes.
     dissolve_part = (
         (f"D{int(p['dissolve_speed'])}-Slow" if p.get('slow_dissolve')
          else f"D{int(p['dissolve_speed'])}-Fast")
-        if p['use_dissolve'] else "D-OFF"
+        if p['use_dissolve'] else f"D{_OFF_SUFFIX}"
     )
     noise_part = (
         f"N{int(p['noise_upres'])}_"
-        f"NS{round(p['noise_strength'], 2)}_"
-        f"SC{round(p['noise_spatial_scale'], 2)}"
-        if p['use_noise'] else "N-OFF"
+        f"NS{_fmt_num(p['noise_strength'])}_"
+        f"SC{_fmt_num(p['noise_spatial_scale'])}"
+        if p['use_noise'] else f"N{_OFF_SUFFIX}"
     )
+
+    # ── v0.7.0 TODO-47: extras for new params (default-suppressed) ───────
+    # Each suffix is appended ONLY when the value differs from Blender's
+    # documented default, so jobs with nothing v0.7.x touched keep their
+    # v0.6.x cache names unchanged.  Defaults: time_scale=1.0,
+    # use_adaptive_timesteps=True, cfl=4.0, timesteps_max=4,
+    # timesteps_min=1, use_fire=False (all 5 fire sub-params irrelevant
+    # when off).
+    extras = []
+
+    # Time scale — suffix only when != 1.0
+    _ts = float(p.get("time_scale", 1.0))
+    if _ts != 1.0:
+        extras.append(f"TS{_fmt_num(_ts)}")
+
+    # Adaptive timesteps — when OFF, append a marker (default is ON).
+    # When ON, CFL/timesteps sub-params each get their own suffix if
+    # non-default.
+    _adapt = bool(p.get("use_adaptive_timesteps", True))
+    if not _adapt:
+        extras.append(f"AT{_OFF_SUFFIX}")   # ATx
+    else:
+        _cfl = float(p.get("cfl_number", 4.0))
+        if _cfl != 4.0:
+            extras.append(f"CFL{_fmt_num(_cfl)}")
+        _tmax = int(p.get("timesteps_max", 4))
+        if _tmax != 4:
+            extras.append(f"TMx{_tmax}")
+        _tmin = int(p.get("timesteps_min", 1))
+        if _tmin != 1:
+            extras.append(f"TMn{_tmin}")
+
+    # Fire — when ON, append F-Y plus the 5 sub-params.  When OFF
+    # (default), suppress the suffix entirely so v0.6.x cache names
+    # match exactly for any job that never touched fire.
+    if p.get("use_fire", False):
+        extras.append("F-Y")
+        extras.append(f"BR{_fmt_num(p['burning_rate'])}")
+        extras.append(f"FS{_fmt_num(p['flame_smoke'])}")
+        extras.append(f"FV{_fmt_num(p['flame_vorticity'])}")
+        extras.append(f"TMax{_fmt_num(p['flame_max_temp'])}")
+        extras.append(f"TIgn{_fmt_num(p['flame_ignition'])}")
+
+    extras_suffix = ("_" + "_".join(extras)) if extras else ""
+
     return (
         f"R{int(p['resolution'])}_"
-        f"V{round(p['vorticity'], 2)}_"
-        f"A{round(p['alpha'], 2)}_"
-        f"B{round(p['beta'], 2)}_"
+        f"V{_fmt_num(p['vorticity'])}_"
+        f"A{_fmt_num(p['alpha'])}_"
+        f"B{_fmt_num(p['beta'])}_"
         f"{dissolve_part}_"
         f"{noise_part}"
+        f"{extras_suffix}"
     )
 
 
