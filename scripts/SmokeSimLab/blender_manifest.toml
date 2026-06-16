@@ -1,0 +1,37 @@
+# Blender extension manifest (Blender 4.2+).  Authoritative when the package is
+# installed as an extension; bl_info in __init__.py is kept only as a fallback
+# for legacy (<4.2) add-on installs.  Keep `version` in sync with bl_info.
+schema_version = "1.0.0"
+
+id = "batchsimlab"
+version = "0.7.6"
+name = "BatchSimLab"
+tagline = "Batch smoke simulation parameter sweeper with CSV logging"
+maintainer = "Rick Palo <rap2010@comcast.net>"
+type = "add-on"
+
+website = "https://github.com/rickpalo/SmokeSimLab"
+
+# Add-on tags must come from Blender's fixed add-on vocabulary.
+tags = ["Physics", "Pipeline"]
+
+# Extensions didn't exist before 4.2; the tool is developed against 5.1.x.
+blender_version_min = "4.2.0"
+
+# Repo LICENSE is GPL v2 (FSF "or any later version" boilerplate).
+license = ["SPDX:GPL-2.0-or-later"]
+copyright = ["2026 Rick Palo"]
+
+[permissions]
+# The addon writes the simulation cache, rendered frames, and the results CSV
+# under the user-chosen Output folder, and reads back the per-job logs/markers.
+# (Blender caps this string at 64 chars.)
+files = "Write the bake cache, rendered frames, CSV and job logs"
+
+[build]
+# __pycache__ is the only non-source artifact that can appear in the package dir.
+paths_exclude_pattern = [
+  "__pycache__/",
+  "*.pyc",
+  ".DS_Store",
+]

@@ -30,13 +30,14 @@ Behaviour
 No third-party dependencies — stdlib + tasklist.exe (built into Windows).
 """
 
-LAUNCHER_VERSION = "0.6.3"
+LAUNCHER_VERSION = "0.6.4"
 
 import atexit
 import ctypes
 import datetime
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -47,6 +48,33 @@ _STALE_LOG_TIMEOUT       = 1800  # seconds of log inactivity (after first write)
 _WALL_CLOCK_TIMEOUT      = 14400 # 4-hour absolute per-job ceiling regardless of log activity
 _POST_EXIT_WERFAULT_SECS = 30    # seconds to keep checking for WerFault after exit
 _CRASH_DUMP_GRACE_SECS   = 15    # seconds to wait for blender.crash.txt to appear after a crash
+_HEARTBEAT_INTERVAL      = 30    # TODO-53: seconds between bake-progress heartbeats to the job log
+
+# TODO-53: frame-numbered VDB file (fluid_data_0007.vdb / fluid_noise_0007.vdb).
+_VDB_FRAME_RE = re.compile(r"_(\d{4})\.vdb$")
+
+
+def _count_cache_vdb(output_path, name):
+    """Count baked VDB frames in the job's cache data/ and noise/ subdirs.
+
+    Returns (data_count, noise_count).  Scans ONLY those two subdirs with
+    os.scandir — never os.walk on the cache tree: the Norton + Synology-mount +
+    Windows-Search filter chain has historically blocked recursive cache walks
+    (see worker v0.5.3/0.5.4).  Any OSError (dir missing, transient lock) is
+    swallowed and counted as 0, so a heartbeat failure never kills the job.
+    """
+    def _count(subdir):
+        d = os.path.join(output_path, "Cache", name, subdir)
+        n = 0
+        try:
+            with os.scandir(d) as it:
+                for entry in it:
+                    if entry.is_file() and _VDB_FRAME_RE.search(entry.name):
+                        n += 1
+        except OSError:
+            pass
+        return n
+    return _count("data"), _count("noise")
 
 _blender_version_cache = None    # populated lazily on the first crash log
 _job_addon_version     = "?"     # addon version from the job JSON (for crash log)
@@ -335,6 +363,8 @@ def main():
     output_path       = job_data.get("output_path", "")
     log_path          = job_data.get("log_path", "")
     collect_debug_log = job_data.get("collect_debug_log", False)
+    job_name          = job_data.get("name", "")          # TODO-53: cache dir = output_path/Cache/<name>
+    frame_end         = job_data.get("frame_end", 0)      # TODO-53: heartbeat denominator
 
     _debug_out = os.path.join(output_path, "debug_log.txt") if output_path else ""
 
@@ -457,6 +487,16 @@ def main():
     last_log_mtime = None
     stale_since    = None
 
+    # TODO-53: bake-progress heartbeat state.  The worker's _log() is silent for
+    # the entire duration of the blocking bake_data()/bake_noise() calls, so the
+    # stale-log watchdog would otherwise see no activity during a long-but-healthy
+    # bake.  We append a heartbeat line to the job log ONLY when the data+noise
+    # VDB count has grown — real frame progress refreshes the log mtime (so the
+    # watchdog won't false-kill a slow bake), while a true hang produces no new
+    # frames → no heartbeat → log goes stale → the watchdog fires as designed.
+    _hb_total      = -1               # last data+noise frame count we logged
+    _hb_next_check = _launch_time + _HEARTBEAT_INTERVAL
+
     while True:
         if proc.poll() is not None:
             # Check for WerFault in the instant after Blender exits — the
@@ -529,6 +569,25 @@ def main():
             _write_crashed_marker(jobs_dir, job_stem, phase)
             print(f"[smoke_launcher] Job {job_stem} CRASHED")
             sys.exit(1)
+
+        # ── Bake-progress heartbeat (TODO-53) ────────────────────────────────
+        # Throttled to once per _HEARTBEAT_INTERVAL so the cache-dir scan stays
+        # cheap and clear of the filter chain.  Writes to the job log only when
+        # the frame count grew, so a hang leaves the log stale for the watchdog.
+        if log_path and job_name and time.time() >= _hb_next_check:
+            _hb_next_check = time.time() + _HEARTBEAT_INTERVAL
+            _d, _n = _count_cache_vdb(output_path, job_name)
+            _total = _d + _n
+            if _total > _hb_total:
+                _hb_total = _total
+                _stage    = "noise" if _n > 0 else "data"
+                try:
+                    with open(log_path, "a", encoding="utf-8") as _hb_fh:
+                        _hb_fh.write(
+                            f"[heartbeat] baking {_stage}: "
+                            f"data {_d}/{frame_end}  noise {_n}/{frame_end}\n")
+                except OSError as _hb_exc:
+                    _dlog(f"heartbeat write skipped: {_hb_exc}")
 
         time.sleep(_POLL_INTERVAL)
 

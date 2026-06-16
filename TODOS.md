@@ -36,6 +36,280 @@ simulation tool.  Future major versions broaden the scope:
 
 ---
 
+## TODO-53: Launcher .vdb heartbeat to the job log — **DONE** (v0.7.5)
+
+**Resolved 2026-06-15.**  The launcher's watchdog loop now appends a
+`[heartbeat] baking <data|noise>: data X/N  noise Y/N` line to the job log,
+throttled to once per `_HEARTBEAT_INTERVAL` (30 s) and **only when the combined
+data+noise VDB count has grown**.  New `_count_cache_vdb(output_path, name)`
+scans `Cache/<name>/data` + `noise` with `os.scandir` (never `os.walk` — the
+Norton/Synology filter chain blocked recursive walks in worker v0.5.3/0.5.4),
+swallowing any OSError so a heartbeat failure never kills the job.
+
+Effect: a healthy bake refreshes the log mtime on every new frame, so the
+existing 1800 s stale-log watchdog can't false-kill a slow-but-progressing
+bake; a true hang produces no new frames → no heartbeat → log goes stale → the
+watchdog fires as designed.  The noise-hang case (TODO-49 job 8) is now caught
+cleanly: once the data bake fills to N, the combined total only grows if noise
+frames appear, so a stuck noise bake leaves the log stale with a final
+`data N/N  noise 0/N` heartbeat that pinpoints the phase.  Reuses the same
+frame-numbered VDB pattern the worker's TODO-52 boundary line exposes.
+
+Tests: `test_todo53_heartbeat.py` (11) — counting, scandir-not-walk guard,
+write-only-on-growth guard, throttle, version match.  Launcher → 0.6.4;
+addon → 0.7.5 (gate constant).  **Re-export required.**
+
+**Original spec retained below.**
+
+---
+
+## TODO-53: Launcher .vdb heartbeat to the job log — (spec)
+
+**Filed 2026-06-15.**  The stale-log watchdog ([smoke_launcher.py] `_STALE_LOG_TIMEOUT
+= 1800`) watches the job **log file's mtime**, but the worker's `_log()` writes
+nothing during the blocking `bake_data()` / `bake_noise()` calls — so the log is
+silent for the entire bake even while the background Blender's console counter
+moves and `.vdb` files stream to disk.  That's the inconsistency behind "keep
+the timer but make it reliable": a genuinely slow high-res bake could approach
+the 30-min window with a totally silent log.
+
+**User's idea (adopted):** have the **launcher** (which already runs the
+watchdog loop in a separate process) periodically count `.vdb` files in the
+job's cache `data/` + `noise/` subdirs and append a short heartbeat line to the
+job log, e.g. `[heartbeat] data 247/500  noise 0/500`.  Benefits:
+- The log mtime advances during a healthy bake → the existing 1800 s timer
+  stays as-is and never false-kills a slow-but-progressing bake.
+- A true hang writes no new `.vdb` → no heartbeat → log goes stale → watchdog
+  fires as designed.
+- The log becomes self-explanatory (you can see bake progress in the log, not
+  just the console).
+
+**Notes:** the launcher already reads the job `.json` for paths and loops on a
+timer, so it has everything it needs; reuse the `_(\d{4})\.vdb$` counting logic
+that `_count_vdb_frames` uses on the addon side.  Pairs naturally with TODO-52
+(both hinge on counting data/ + noise/ frames).  Launcher change → launcher
+version bump + re-export.
+
+---
+
+## TODO-52: Separate "Baking noise" stage in the progress model — **DONE** (v0.7.4)
+
+**Resolved 2026-06-15.**  Implemented as a **sub-stage** of the Baking
+macro-stage (label + subtask bar), not a full separate band: the worker logs
+`Baking noise (bake_noise)...` between `bake_data()` and `bake_noise()` (both
+branches; worker → 0.7.2), and `_STAGES` gains
+`("Baking noise (", "Baking noise", 1)` at the **same** completed-rank as the
+data bake — so the stage *label* flips to "Baking noise" (rightmost-keyword
+match) and the subtask bar restarts 0→N counting the `noise/` subdir (via
+`_count_vdb_frames(..., subdir="noise")`), while Bar-3 band math and
+`_TOTAL_SUBTASKS` stay untouched.  A hung noise bake now shows
+"Baking noise (0 of 500)" instead of a frozen data bar at "500 of 500"
+(TODO-49).  **Deferred (intentionally):** giving noise its own time-estimate
+*band* (dynamic `_TOTAL_SUBTASKS` 4↔5) — the user confirmed estimates aren't
+vital, and a separate band risks the complex multi-bar poller for little gain.
+Re-open that slice if per-phase ETA accuracy becomes important (ties to
+TODO-51).  Tests: `test_todo52_noise_stage.py` (9) + the existing
+`TestStagesMatchWorkerLog` guard now covers the noise keyword.  Addon → 0.7.4;
+worker → 0.7.2.  **Re-export required.**
+
+**Original spec retained below.**
+
+---
+
+## TODO-52: Separate "Baking noise" stage in the progress model — (spec)
+
+**Filed 2026-06-15.**  The live bake bar is driven by `_count_vdb_frames`, which
+counts only the cache **`data/`** subdir.  So the bar fills 0 → N during the
+data bake, then **freezes at "N of N" for the entire noise (up-res) bake**
+(which writes to the **`noise/`** subdir, uncounted).  This is exactly the
+frozen "Baking 500 of 500" seen in TODO-49 — the data pass finished and the
+noise pass ran invisibly until it crashed/hung.
+
+**Design decision (2026-06-15, user-approved): a discrete "Baking noise" stage,
+not a single combined data+noise bar.**  Considered two options:
+- (A) Combined — one bake bar over `data + noise` frames (total 2N).
+- (B) Separate stage — `Baking` (data) then a distinct `Baking noise` stage,
+  conditional on `use_noise`.
+
+Chose **(B)** because: (1) **diagnosis** — the noise pass is exactly where
+TODO-49 crashes/hangs occur, so a frozen "Baking noise 0/500" is far more
+legible than a combined bar stuck at 640/1000; (2) **estimate accuracy** — data
+vs noise frames have very different per-frame cost, and the architecture already
+estimates time *per stage* (Bar 2 band allocation), so one combined rate would
+lurch when crossing into noise; (3) **fits the model** — `_STAGES` is already a
+conditional staged system (render is skipped in bake-only mode), so inserting a
+conditional stage extends the existing pattern instead of special-casing the
+bake denominator.
+
+Resulting stage sequence:
+- **noise off:** Starting → Baking → Rendering → (Still) → Complete
+- **noise on:**  Starting → Baking → **Baking noise** → Rendering → (Still) → Complete
+
+**Implementation:**
+1. **Worker (shared with TODO-53):** emit a boundary log line between the two
+   bake calls — `_log(f"[{name}] Baking noise (bake_noise)...")` — in *both* the
+   FULL and RESUME bake branches, so the poller can match a new stage keyword.
+   Worker version bump + re-export.
+2. **Addon `_STAGES`:** insert `("Baking noise (", "Baking noise", 2)` and
+   re-rank Rendering 2→3 / Still 3→4.  Note `"Baking noise ("` does **not**
+   contain the substring `"Baking ("`, so the data-stage keyword won't
+   false-match the noise line; the highest-rank matched keyword wins as today.
+3. **Per-job stage count:** make `_TOTAL_SUBTASKS` effective value depend on the
+   running job's `use_noise` (5 with noise, 4 without) so Bar 3 band math and
+   "Job stage X of N" stay correct — mirror how bake-only mode already varies
+   the stage set.
+4. **Noise subtask bar:** when in the `Baking noise` stage, count `noise/` VDBs
+   (reuse `_count_vdb_frames`'s `_(\d{4})\.vdb$` logic on the `noise/` subdir)
+   and show `Baking noise (X of N)`, mirroring the existing data-bake subtask
+   text at `__init__.py` ~line 3517-3538.
+
+**Tests:** extend `test_progress_helpers.py` with a noise-enabled fixture
+(noise/ counting); add a `_STAGES` test asserting the noise keyword appears in
+`smoke_worker.py` (regression guard like `TestStagesMatchWorkerLog`) and that
+`"Baking noise ("` is ranked above `"Baking ("`.  Addon + worker change →
+re-export required.
+
+---
+
+## TODO-51: Better time-estimate formulas — add samples + noise up-res terms — **IN PROGRESS** (step 1 done, v0.7.3)
+
+**Step 1 (data collection) DONE in v0.7.3:** the worker `_perf` record now logs
+`render_samples`, `use_noise`, and `noise_upres` (worker → 0.7.1, re-export
+required).  **Next:** run a calibration batch that *varies samples and
+noise_upres at a fixed resolution* (see calibration note at the end), then do
+steps 2-3 (analysis + model).
+
+**Filed 2026-06-15.**  Two observations from the 2026-06-15 batch:
+1. **Render time rises with noise up-res even at the same output resolution.**
+   Higher `noise_upres` makes a denser volumetric grid, so EEVEE raymarches more
+   steps per pixel — the render gets slower even though camera width×height is
+   unchanged.
+2. **Render samples affect render time** and aren't in the model at all.
+
+**Current model** (`__init__.py`, constants block ~line 160-180):
+- Bake:   `bake_secs ≈ _BAKE_RATE_PER_RES3_FRAME × resolution³ × frames`
+  (median of res=128 samples; ignores the separate **noise bake pass** cost,
+  which also scales with `noise_upres` — see [[project_noise_bake_ceiling]]).
+- Render: `render_secs ≈ rate × width × height × frames`
+  (EEVEE rate = median of 167 samples, cv=27%).  **Independent of samples AND
+  noise up-res** — which is exactly the scatter the user is seeing.
+
+**Blocker — data collection gap (do this FIRST):**  the per-job perf record in
+`smoke_worker.py` (`_perf`, ~line 1291) records `resolution`, `render_width`,
+`render_height`, `frame_end`, and the derived per-pixel/per-res³ rates — but
+**NOT `render_samples` and NOT `noise_upres`/`use_noise`**.  So the existing
+`perf_log.json` corpus can't fit a samples or noise term.  Until those fields
+are logged, "collect data" can't produce the needed signal.
+- `render_samples` is read at worker line 327 (`cfg.get("render_samples", 16)`)
+  and lives in each `job_NNNN.json` cfg, so historical data *could* be
+  back-joined by `job_name`, but cleanest is to add both fields to `_perf`.
+- `noise_upres` is in the results CSV but not in `perf_log.json`.
+
+**Plan when picked up:**
+1. **Worker (data):** add `render_samples`, `noise_upres`, `use_noise` to the
+   `_perf` dict; worker version bump + re-export.  Run a calibration batch that
+   *varies samples and noise_upres* at a fixed resolution so the terms are
+   separable.
+2. **Analysis:** extend `tools/analyze_estim.py` to fit:
+   - Render (EEVEE):  `render_secs ≈ (a + b·samples) × pixels × frames ×
+     f(noise_upres)` — start with samples roughly linear (+ fixed overhead) and
+     a volume term that grows with `noise_upres` (try linear then a power fit;
+     the volume grid edge is res×upres, so cost may track the up-res voxel count
+     rather than output pixels).
+   - Bake:  add a noise-bake term so total bake ≈ data-bake(res³) +
+     noise-bake(f(res, noise_upres)); the noise pass is currently folded into
+     one res³ rate and underestimates high-upres jobs.
+   - Re-check Cycles once real Cycles data exists (still a placeholder).
+3. **Addon (model):** replace the flat `_RENDER_RATE_EEVEE_PER_PIXEL_FRAME` /
+   `_BAKE_RATE_PER_RES3_FRAME` usage with the new multi-term formulas; keep the
+   old constants as fallbacks when samples/upres are unknown.  New estimator
+   functions each get tests (feedback_testing); pin a few known (samples, upres)
+   → expected-seconds rows as regression anchors.
+
+**Acceptance:** estimate error (predicted vs actual in `estim_log.jsonl`) drops
+materially for high-sample and high-upres jobs; cv on the EEVEE render rate
+falls once samples/noise are modelled instead of averaged over.
+
+**Calibration-batch design (own checklist item — the existing corpus is almost
+all EEVEE @ 16 samples, so there's no variance to fit until this runs):**
+- Fix resolution (e.g. 128) and frame count low (e.g. 60) to keep it cheap.
+- Sweep `render_samples` across several values (e.g. 4, 16, 32, 64, 128) with
+  noise off → isolates the samples term.
+- Sweep `noise_upres` (1, 2, 3) at one fixed sample count → isolates the noise
+  term in both render and bake.
+- One cross cell (high samples × high upres) to check the terms compose.
+- Re-run on each machine of interest (rates are hardware-specific); tag perf
+  records so analyze_estim can fit per-machine if needed.
+
+---
+
+## TODO-49: Warn when noise up-res grid exceeds the safe ceiling — **DONE** (v0.7.2)
+
+**Filed + Resolved 2026-06-15.**  During a 10-job batch on the i9-13900 /
+128 GB machine (Blender 5.1.1), the 256-resolution jobs failed in the **noise**
+bake (the data bake finished — progress bar reached "Baking 500 of 500" — then
+`bpy.ops.fluid.bake_noise()` never returned):
+
+| Job | res × upres | edge | outcome |
+|-----|-------------|------|---------|
+| many 128 jobs | 128×3 | 384³ | OK |
+| job 6 | 256×2 | 512³ | OK |
+| job 7 | 256×3 | 768³ | crash — `EXCEPTION_ACCESS_VIOLATION` in `tbbmalloc.dll`, exit 1 |
+| job 8 | 256×4 | 1024³ | hang — stale-log watchdog killed it after 30 min |
+
+Root cause is in Mantaflow's high-resolution noise bake (32-bit grid indexing
+overflows once the vec3 element count passes 2³¹ near 1024³), **not** our code —
+consistent with the existing finding that the stack-trace crashes trace to
+Blender internals.  It is **not** a hard limit: after re-exporting and
+restarting twice, every job (including 256×4) eventually completed.
+
+**Fix (v0.7.2, addon-only):** new module-level helpers `noise_grid_edge()` and
+`noise_grid_exceeds_ceiling()` + constant `_NOISE_UPRES_EDGE_WARN = 512`
+(exclusive; the known-good 512³ case does not warn).  The Export Batch panel
+counts jobs over the ceiling and shows a non-blocking red warning box
+("N job(s) exceed the noise up-res ceiling … may crash or hang … retry if it
+stalls").  Export is **not** disabled — the user can continue.  Covered by
+`test_noise_ceiling.py` (8 tests).
+
+---
+
+## TODO-50: Per-job-line status + warning tooltip in the Job Log list — **CANCELLED** (2026-06-15)
+
+**Cancelled the day it was filed.**  Blender's `UIList.label()` has no tooltip
+API, and the user decided the inline-glyph fallback ("◐/⚠ + status word in the
+row text") isn't worth it either.  The aggregate panel warning box from TODO-49
+already covers the noise-ceiling case; per-row job status is visible enough via
+the existing status icon + unicode prefix.  Re-open only if a concrete need for
+per-row hover text resurfaces.
+
+**Original spec retained below for reference.**
+
+**Filed 2026-06-15.**  Two related asks for the `SMOKE_UL_job_log` rows:
+
+1. **Status tooltip** — each job line should expose its lifecycle state as
+   human-readable text: "Not Started", "Baking", "Baked, Waiting for Render",
+   "Rendering", "Complete", plus the error states already tracked
+   ("Retrying", "Failed", "Crashed").  These map onto the existing
+   `_job_statuses` values (`NOT_STARTED`, `IN_PROGRESS` → Baking,
+   `BAKED` → Baked/Waiting for Render, `RENDERING`, `COMPLETE`, `RETRYING`,
+   `FAILED`, `CRASHED`).
+2. **Noise-ceiling warning tooltip** — surface the TODO-49 warning per offending
+   job line (which res×upres tripped it), not just the aggregate panel box.
+
+**Blocker / design note:** Blender's `UIList.draw_item` uses `layout.label()`,
+which has **no hover-tooltip API** — tooltips only attach to props/operators.
+Options to evaluate when picking this up:
+- (a) Inline glyphs instead of tooltips — the rows already carry a unicode
+  status prefix (▶ ◐ ◉ ✓ ✗ ⚠); add a ⚠ marker for over-ceiling jobs and a
+  short status word in the row text.
+- (b) Replace the per-row label with a tiny disabled `operator()` whose
+  `description=` carries the tooltip (heavier; one operator per state).
+- (c) A details sub-panel that prints the selected row's full status + any
+  warnings below the list.
+Recommend (a) for the inline status word + ⚠, optionally (c) for full text.
+
+---
+
 ## TODO-48: Compact filename format — trim trailing zeros + shorter OFF indicator — **DONE** (v0.7.1)
 
 **Filed + Resolved 2026-06-02 → 2026-06-05.**  Bundled with TODO-47 in

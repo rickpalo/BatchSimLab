@@ -51,7 +51,7 @@ Requires Blender 4.x (tested on 4.5.5 and 5.1.1) on Windows 10/11.  May work on 
 bl_info = {
     "name":        "BatchSimLab",
     "author":      "Rick Palo",
-    "version":     (0, 7, 1),
+    "version":     (0, 7, 6),
     "blender":     (4, 0, 0),
     "location":    "View3D > Sidebar > BatchLab",
     "description": "Batch smoke simulation parameter sweeper with CSV logging "
@@ -84,8 +84,8 @@ DOCS_URL = "https://github.com/rickpalo/SmokeSimLab"
 # Expected version strings in the helper files exported to the output folder.
 # When Run Batch detects a mismatch it warns the user to re-run Export Batch.
 # Keep these in sync with WORKER_VERSION / LAUNCHER_VERSION in those files.
-_EXPECTED_WORKER_VERSION   = "0.7.0"
-_EXPECTED_LAUNCHER_VERSION = "0.6.3"
+_EXPECTED_WORKER_VERSION   = "0.7.2"
+_EXPECTED_LAUNCHER_VERSION = "0.6.4"
 
 
 def _read_helper_version(path: str, var_name: str) -> str:
@@ -178,6 +178,44 @@ _RENDER_RATE_EEVEE_PER_PIXEL_FRAME  = 7.9239e-07 # s / (pixel * frame); median o
 # Legacy flat rates kept as fallback when resolution/dimensions are unknown.
 _BAKE_RATE_DEFAULT   =   1.0  # s/frame at unspecified resolution
 _RENDER_RATE_DEFAULT =  45.0   # s/frame at unspecified resolution
+
+
+# ---------------------------------------------------------------------------
+# Noise (up-res) bake ceiling
+# ---------------------------------------------------------------------------
+# The noise pass bakes a separate up-resolution grid whose edge length is
+# (domain resolution × noise up-res factor).  At high effective resolutions
+# Mantaflow's noise bake has been observed to either crash with an
+# EXCEPTION_ACCESS_VIOLATION in tbbmalloc.dll or hang at "Baking 500 of 500"
+# (the data pass finishes, the noise pass never returns).  Observed on a
+# 128 GB / i9-13900 machine, Blender 5.1.1:
+#   • 128×3 = 384³  — fine (many jobs completed)
+#   • 256×2 = 512³  — fine
+#   • 256×3 = 768³  — crashed (tbbmalloc) until re-exported + retried
+#   • 256×4 = 1024³ — hung, killed by the launcher's stale-log watchdog
+# It is NOT a hard limit: every config eventually completed after re-export and
+# restart, so callers warn the user rather than block.  The edge threshold below
+# sits just above the known-good 512³ case so it flags only the flaky zone.
+_NOISE_UPRES_EDGE_WARN = 512   # warn when (resolution × noise_upres) exceeds this
+
+
+def noise_grid_edge(resolution, use_noise, noise_upres):
+    """Effective edge length of the noise up-res grid = resolution × up-res factor.
+
+    Returns 0 when noise is disabled, since no separate noise grid is baked then.
+    """
+    if not use_noise:
+        return 0
+    return int(resolution) * int(noise_upres)
+
+
+def noise_grid_exceeds_ceiling(resolution, use_noise, noise_upres):
+    """True when the noise up-res grid is large enough to risk a crash or hang.
+
+    See _NOISE_UPRES_EDGE_WARN for the empirical basis.  This is advisory only —
+    the bake may still succeed — so the UI warns and lets the user continue.
+    """
+    return noise_grid_edge(resolution, use_noise, noise_upres) > _NOISE_UPRES_EDGE_WARN
 
 
 # ---------------------------------------------------------------------------
@@ -1634,9 +1672,16 @@ class SmokeSettings(bpy.types.PropertyGroup):
 
     output_path: bpy.props.StringProperty(
         name="Output",
-        description="Root output folder for cache, renders, and CSV",
+        description="Root output folder for cache, renders, and CSV.  Defaults "
+                    "to the current .blend file's folder on load; change it to "
+                    "any folder (e.g. a fast local scratch disk)",
         subtype='DIR_PATH',
-        default="C:/tmp",
+        # Empty until a .blend loads; _reset_on_load fills it with the blend's
+        # own folder (resolved absolute — see _default_output_path).  Replaces the
+        # old hard-coded "C:/tmp"; a Python StringProperty can't store the literal
+        # "//" token (Blender 5.x warns "does not support blend relative // prefix"),
+        # so we store the resolved path instead.
+        default="",
     )
 
     # ── Iteration mode ───────────────────────────────────────────────────────
@@ -2555,6 +2600,15 @@ _STAGES = (
     ("Freeing previous cache",     "Clearing cache",        0),
     ("Decision : SKIP BAKE",       "Using existing cache",  2),  # setup + bake both done
     ("Baking (",                   "Baking simulation",     1),  # setup done
+    # TODO-52: the worker logs "Baking noise (bake_noise)..." between bake_data()
+    # and bake_noise().  Same completed-rank (1) as the data bake, so this is a
+    # *label/sub-bar* refinement inside the single Baking macro-stage — Bar-3 band
+    # math and _TOTAL_SUBTASKS are deliberately untouched (estimates aren't vital;
+    # a full separate band is deferred — see TODO-52).  Detected by rightmost
+    # position, so the label flips to "Baking noise" once that line appears.
+    # "Baking noise (" does NOT contain the substring "Baking (", so the data
+    # keyword never false-matches the noise line.
+    ("Baking noise (",             "Baking noise",          1),  # data bake done, noise running
     ("Bake complete",              "Verifying cache",       2),  # baking done
     ("Rendering animation",        "Rendering animation",   2),
     ("frame sequence complete",    "Animation complete",    2),
@@ -2650,14 +2704,18 @@ def _find_running_log(jobs_dir):
     return None
 
 
-def _count_vdb_frames(jobs_dir, log_stem, tail=None, start_time=None):
+def _count_vdb_frames(jobs_dir, log_stem, tail=None, start_time=None, subdir="data"):
     """Return (frames_counted, frame_end) by counting VDB files for log_stem, or None.
 
     When tail is supplied the function tries to extract the effective cache dir
     from the v0.2.7+ "Effective cache dir" log line so it counts files in the
     directory the worker is actually baking into (which may differ from the
     current job's own cache dir when use_existing_cache resumes from another run).
-    Falls back to Cache/<name>/data/ when the log line is absent.
+    Falls back to Cache/<name>/<subdir>/ when the log line is absent.
+
+    subdir selects the cache sub-directory to count: "data" (default) for the
+    data bake, "noise" for the TODO-52 noise bake stage.  The frame-number regex
+    is the same for both (Mantaflow writes fluid_data_NNNN.vdb / fluid_noise_NNNN.vdb).
 
     When start_time is provided (a time.time() value), only VDB files with an
     mtime >= start_time - 10.0 are counted.  This handles two failure modes:
@@ -2706,13 +2764,13 @@ def _count_vdb_frames(jobs_dir, log_stem, tail=None, start_time=None):
         _m = re.search(r'Effective cache dir\s+:\s+(.+)', tail)
         if _m:
             _eff = _m.group(1).strip()
-            _data = os.path.join(_eff, "data")
+            _data = os.path.join(_eff, subdir)
             if os.path.isdir(_data):
                 frames_baked = _vdb_count_from_dir(_data)
                 return len(frames_baked), frame_end
 
     # Fall back: look in this job's own cache dir.
-    frames_baked = _vdb_count_from_dir(os.path.join(output_path, "Cache", name, "data"))
+    frames_baked = _vdb_count_from_dir(os.path.join(output_path, "Cache", name, subdir))
     return len(frames_baked), frame_end
 
 
@@ -3491,6 +3549,21 @@ def _poll_batch_progress_impl():
                     if to_bake > 0:
                         subtask_text   = f"Baking ({baked_new} of {to_bake})"
                         subtask_factor = min(baked_new / to_bake, 1.0)
+
+            elif stage_label == "Baking noise":
+                # TODO-52: data bake is done; count the noise/ subdir so the bar
+                # keeps moving (and a hung noise bake shows "Baking noise (0 of N)"
+                # instead of a frozen data bar at full).  No mtime filtering: the
+                # noise/ dir is freshly written this session (data resume reuses
+                # data/, never noise/), so a plain count is the live progress.
+                noise_info = _count_vdb_frames(jobs_dir, log_stem, tail,
+                                               subdir="noise")
+                if noise_info:
+                    noise_baked, total_frames = noise_info
+                    if total_frames > 0:
+                        frames_baked   = noise_baked
+                        subtask_text   = f"Baking noise ({noise_baked} of {total_frames})"
+                        subtask_factor = min(noise_baked / total_frames, 1.0)
 
             elif stage_label == "Rendering animation":
                 _start_t    = _bt("job_start_time") if _bt("job_start_time") > 0 else None
@@ -4778,13 +4851,36 @@ class SMOKE_PT_panel(bpy.types.Panel):
         # button; compute outside the if so the button-enable logic below
         # has access regardless of collapse state (though the button only
         # draws inside the if).
-        job_count = sum(1 for _ in generate_jobs(s))
+        # Materialise the job list once: we need both the count and a scan for
+        # oversized noise grids (the per-job dict carries resolution/up-res).
+        _jobs_preview = list(generate_jobs(s))
+        job_count = len(_jobs_preview)
+        _noise_ceiling_jobs = sum(
+            1 for p in _jobs_preview
+            if noise_grid_exceeds_ceiling(
+                p["resolution"], p["use_noise"], p["noise_upres"])
+        )
         if s.show_output:
             # ── Iteration mode + job count ────────────────────────────────
             box_iter = box_out.box()
             box_iter.label(text="Iteration Mode:")
             box_iter.prop(s, "iteration_mode", expand=True)
             box_iter.label(text=f"{job_count} job(s) will be created")
+
+            # Warn (don't block) when any job's noise up-res grid is in the zone
+            # where Mantaflow's noise bake has crashed or hung.  edge =
+            # resolution × noise_upres; see _NOISE_UPRES_EDGE_WARN.
+            if _noise_ceiling_jobs:
+                warn = box_iter.box()
+                warn.alert = True
+                warn.label(
+                    text=f"{_noise_ceiling_jobs} job(s) exceed the noise up-res "
+                         f"ceiling ({_NOISE_UPRES_EDGE_WARN}³)",
+                    icon='ERROR')
+                col_w = warn.column(align=True)
+                col_w.scale_y = 0.75
+                col_w.label(text="Noise bake may crash or hang at this size.")
+                col_w.label(text="Baking can still succeed — retry if it stalls.")
 
             box_out.separator()
 
@@ -4970,6 +5066,24 @@ class SMOKE_PT_panel(bpy.types.Panel):
 # ---------------------------------------------------------------------------
 
 @bpy.app.handlers.persistent
+def _default_output_path():
+    """Absolute folder of the current .blend, or '' if the file is unsaved.
+
+    Used instead of storing the literal '//' token: a Python-defined
+    StringProperty rejects '//' with a "does not support blend relative //
+    prefix" RuntimeWarning on Blender 5.x, so we resolve it to an absolute path
+    here (bpy.path.abspath is a pure path utility — no property assignment, no
+    warning).  Every consumer still wraps the value in bpy.path.abspath, so an
+    absolute path passes through unchanged.
+    """
+    try:
+        if bpy.data.filepath:
+            return bpy.path.abspath("//")
+    except (AttributeError, RuntimeError):
+        pass
+    return ""
+
+
 def _reset_on_load(dummy=None):
     """
     Reset ALL addon properties to their defaults whenever a .blend file is opened.
@@ -4996,7 +5110,9 @@ def _reset_on_load(dummy=None):
 
         # ── Setup ────────────────────────────────────────────────────────────
         s.domain_obj  = None
-        s.output_path = "C:/tmp"
+        # Default to the loaded .blend's own folder (resolved absolute) rather
+        # than a hard-coded machine path; '' when the file is still unsaved.
+        s.output_path = _default_output_path()
 
         # ── Simulation parameters ─────────────────────────────────────────────
         for name in ITERABLE_PARAMS:

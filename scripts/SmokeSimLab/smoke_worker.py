@@ -15,7 +15,7 @@ Applies fluid parameters, bakes, renders playblast MP4 + final still PNG,
 appends a row to Renders/results.csv, then quits Blender.
 """
 
-WORKER_VERSION = "0.7.0"
+WORKER_VERSION = "0.7.2"
 
 import bpy
 import sys
@@ -938,7 +938,10 @@ elif use_existing_cache and baked_frames:
         _log(f"[{name}] ERROR: bake_data() did not finish normally "
              f"(result: {_bake_result})")
         sys.exit(1)
+    # TODO-52: log a distinct boundary line before the noise bake so the addon's
+    # _STAGES poller can show a separate "Baking noise" stage (data bake is done).
     if p["use_noise"]:
+        _log(f"[{name}] Baking noise (bake_noise)...")
         _noise_result = bpy.ops.fluid.bake_noise()
         if 'FINISHED' not in _noise_result:
             _log(f"[{name}] ERROR: bake_noise() did not finish normally "
@@ -983,7 +986,10 @@ else:
         _log(f"[{name}] ERROR: bake_data() did not finish normally "
              f"(result: {_bake_result})")
         sys.exit(1)
+    # TODO-52: log a distinct boundary line before the noise bake so the addon's
+    # _STAGES poller can show a separate "Baking noise" stage (data bake is done).
     if p["use_noise"]:
+        _log(f"[{name}] Baking noise (bake_noise)...")
         _noise_result = bpy.ops.fluid.bake_noise()
         if 'FINISHED' not in _noise_result:
             _log(f"[{name}] ERROR: bake_noise() did not finish normally "
@@ -1294,6 +1300,13 @@ _perf = {
     "job_name":    name,
     "resolution":  _res,
     "frame_end":   frame_end,
+    # TODO-51: fields needed to fit samples + noise-upres terms into the time
+    # estimates.  Render time rises with both render_samples (more EEVEE/Cycles
+    # passes) and noise_upres (denser volume grid → more raymarch steps at the
+    # same output resolution); the noise bake pass also scales with noise_upres.
+    "render_samples": render_samples,
+    "use_noise":      bool(p["use_noise"]),
+    "noise_upres":    int(p["noise_upres"]) if p["use_noise"] else None,
     # Bake
     "bake_skipped":            bake_skipped,
     "bake_seconds":            round(bake_seconds, 2) if not bake_skipped else None,
