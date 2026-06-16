@@ -208,5 +208,9 @@ __marimo__/
 
 # SmokeSimLab local workspace
 *.zip
+# Exception: the published extension-update feed under docs/ must be tracked so
+# GitHub Pages can serve the zip alongside index.json (the feed's archive_url is
+# relative to index.json).  Build artifacts in dist/ stay ignored.
+!docs/*.zip
 .vscode/
 .claude/

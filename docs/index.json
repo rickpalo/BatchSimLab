@@ -1,0 +1,33 @@
+{
+  "version": "v1",
+  "blocklist": [],
+  "data": [
+    {
+      "schema_version": "1.0.0",
+      "id": "batchsimlab",
+      "name": "BatchSimLab",
+      "tagline": "Batch smoke simulation parameter sweeper with CSV logging",
+      "version": "0.7.6",
+      "type": "add-on",
+      "maintainer": "Rick Palo <rap2010@comcast.net>",
+      "license": [
+        "SPDX:GPL-2.0-or-later"
+      ],
+      "blender_version_min": "4.2.0",
+      "website": "https://github.com/rickpalo/SmokeSimLab",
+      "copyright": [
+        "2026 Rick Palo"
+      ],
+      "permissions": {
+        "files": "Write the bake cache, rendered frames, CSV and job logs"
+      },
+      "tags": [
+        "Physics",
+        "Pipeline"
+      ],
+      "archive_url": "./batchsimlab-0.7.6.zip",
+      "archive_size": 89174,
+      "archive_hash": "sha256:e9fd57a25d8be12dcb49ba9ddadfc5ea88b8398af325c69a4a17171f504f06ec"
+    }
+  ]
+}
