@@ -36,6 +36,28 @@ simulation tool.  Future major versions broaden the scope:
 
 ---
 
+## TODO-54: RELEASING.md describes a release-copy layout that doesn't exist — **OPEN**
+
+**Filed 2026-06-15.**  RELEASING.md (repo structure section + "Your local
+working copies live in `scripts/SmokeSimLab/` (ignored by git) … copy them into
+`SmokeSimLab/` at the repo root") describes a two-directory workflow that is
+**not** how the repo actually works:
+- `scripts/SmokeSimLab/` is **tracked** (it's the real source — `__init__.py`,
+  `smoke_worker.py`, `smoke_launcher.py`, and now `blender_manifest.toml`), not
+  git-ignored.
+- There is **no** `SmokeSimLab/` release-copy dir on disk or in git.
+
+So the "copy to `SmokeSimLab/` before release" step is stale fiction — releases
+are built straight from `scripts/SmokeSimLab/` (see the v0.7.6 extension build:
+`--source-dir scripts/SmokeSimLab`).
+
+**Fix:** rewrite RELEASING.md's "Repository structure" + step-1 wording to match
+reality — single tracked source at `scripts/SmokeSimLab/`, extension built/zipped
+from there into `dist/` (ignored) or `docs/` (feed).  Drop the
+working-copy/release-copy split entirely.  Doc-only; no code or version bump.
+
+---
+
 ## TODO-53: Launcher .vdb heartbeat to the job log — **DONE** (v0.7.5)
 
 **Resolved 2026-06-15.**  The launcher's watchdog loop now appends a
