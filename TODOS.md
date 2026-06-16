@@ -106,9 +106,17 @@ against the running Blender 5.x before coding — these are the expected mapping
 | → Normal | `velocity_normal` | only when initial-velocity on |
 | → Initial X / Y / Z | `velocity_coord[0..2]` | 3-float vector; only when on |
 
-The four velocity terms are only sweepable when `use_initial_velocity` is on
-(mirror how dissolve_speed is excluded from the sweep when `use_dissolve` is
-off — the `sweepable` gating pattern in `generate_jobs_*`).
+The velocity terms are only sweepable when `use_initial_velocity` is on (mirror
+how dissolve_speed is excluded when `use_dissolve` is off — the `sweepable`
+gating in `generate_jobs_*`).
+
+**Velocity sweep model (decided 2026-06-16):** Initial Velocity is entered as a
+**list of explicit `x, y, z` vectors** — the user adds as many vectors as they
+want to compare; each vector is one swept value. Default `0, 0, 0`. The entry
+widget shows the format hint (`_VELOCITY_FORMAT_HINT`). NOT 3 independent axes
+(avoids product blow-up) and NOT magnitude-only. Pure parse/format helpers
+`_parse_velocity_vector` / `_format_velocity_vector` landed in increment 2a
+(12 tests) so the widget and job generation share one definition.
 
 ### D. UI — per-emitter section in Simulation Parameters
 

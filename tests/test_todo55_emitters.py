@@ -192,3 +192,49 @@ class TestFindEmitters:
     def test_no_domain_returns_all_flow_objects(self):
         scene = _scene([_flow("B"), _flow("A")])
         assert [o.name for o in ssl.find_emitters(scene, None)] == ["A", "B"]
+
+
+# --- Initial Velocity vector parsing (list-of-vectors sweep) --------------
+
+class TestParseVelocityVector:
+    def test_basic_comma(self):
+        assert ssl._parse_velocity_vector("0, 0, 1") == (0.0, 0.0, 1.0)
+
+    def test_no_spaces(self):
+        assert ssl._parse_velocity_vector("1,2,3") == (1.0, 2.0, 3.0)
+
+    def test_negative_and_decimals(self):
+        assert ssl._parse_velocity_vector(" 1.5, 0, -2 ") == (1.5, 0.0, -2.0)
+
+    def test_brackets_tolerated(self):
+        assert ssl._parse_velocity_vector("[0, 0, 5]") == (0.0, 0.0, 5.0)
+
+    def test_whitespace_separated_fallback(self):
+        assert ssl._parse_velocity_vector("1 0 2") == (1.0, 0.0, 2.0)
+
+    def test_wrong_count_returns_none(self):
+        assert ssl._parse_velocity_vector("1, 2") is None
+        assert ssl._parse_velocity_vector("1, 2, 3, 4") is None
+
+    def test_non_numeric_returns_none(self):
+        assert ssl._parse_velocity_vector("a, b, c") is None
+
+    def test_empty_and_none(self):
+        assert ssl._parse_velocity_vector("") is None
+        assert ssl._parse_velocity_vector("   ") is None
+        assert ssl._parse_velocity_vector(None) is None
+
+    def test_default_constant(self):
+        assert ssl._VELOCITY_DEFAULT == (0.0, 0.0, 0.0)
+
+
+class TestFormatVelocityVector:
+    def test_trims_trailing_zeros(self):
+        assert ssl._format_velocity_vector((0.0, 0.0, 1.0)) == "0, 0, 1"
+
+    def test_decimals_preserved(self):
+        assert ssl._format_velocity_vector((1.5, 0.0, -2.25)) == "1.5, 0, -2.25"
+
+    def test_round_trips_with_parse(self):
+        vec = (1.5, 0.0, -2.0)
+        assert ssl._parse_velocity_vector(ssl._format_velocity_vector(vec)) == vec

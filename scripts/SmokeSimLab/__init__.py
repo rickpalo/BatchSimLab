@@ -1186,6 +1186,50 @@ def find_emitters(scene, domain_obj):
     return emitters_inside_domain(find_fluid_emitters(scene), domain_obj)
 
 
+# ---------------------------------------------------------------------------
+# v0.9.0 TODO-55: emitter Initial Velocity is swept as a LIST OF XYZ VECTORS.
+# The user adds as many "x, y, z" vectors as they want to compare (default
+# "0, 0, 0"); each vector is one swept value.  The entry widget shows the
+# expected format.  These pure helpers parse/format the string form so the UI
+# and job generation share one definition (and so parsing is unit-testable
+# without a running Blender).
+# ---------------------------------------------------------------------------
+
+_VELOCITY_DEFAULT = (0.0, 0.0, 0.0)
+_VELOCITY_FORMAT_HINT = "x, y, z  (e.g. 0, 0, 1)"
+
+
+def _parse_velocity_vector(text):
+    """Parse a user-entered velocity string into an (x, y, z) float tuple.
+
+    Accepts comma- or whitespace-separated values with optional surrounding
+    spaces or brackets, e.g. "0,0,1", " 1, 0, -2 ", "[0, 0, 5]".  Returns None
+    when the text does not contain exactly three numbers — callers treat None
+    as 'invalid: show the format hint / skip this entry'.
+    """
+    if text is None:
+        return None
+    cleaned = text.strip().strip("[](){}").strip()
+    if not cleaned:
+        return None
+    parts = cleaned.split(",") if "," in cleaned else cleaned.split()
+    if len(parts) != 3:
+        return None
+    try:
+        return tuple(float(p) for p in parts)
+    except (ValueError, TypeError):
+        return None
+
+
+def _format_velocity_vector(vec):
+    """Format an (x, y, z) iterable back to a compact "x, y, z" string.
+
+    Uses the same trailing-zero-trimming `_fmt_num` as filename/value display
+    so "0, 0, 1" round-trips cleanly.
+    """
+    return ", ".join(_fmt_num(c) for c in vec)
+
+
 # Sentinel filename matchers used by the poll + summary code.  Defined as exact
 # regexes (NOT endswith) so the two-pass pipeline's per-phase sentinels —
 # job_NNNN.bake.done / .render.done / .bake.crashed / .render.crashed — are NOT
