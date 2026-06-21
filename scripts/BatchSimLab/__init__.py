@@ -92,14 +92,20 @@ _EXPECTED_LAUNCHER_VERSION = "0.6.4"
 
 
 def _read_helper_version(path: str, var_name: str) -> str:
-    """Return the version string for var_name from the first 30 lines of path.
+    """Return the version string for var_name from the first 200 lines of path.
 
     Returns "" if the file is missing or the variable is not found.
+
+    BUG-017: the scan was capped at 30 lines, but smoke_launcher.py's module
+    docstring pushes ``LAUNCHER_VERSION`` to line 33 — so Run Batch always
+    reported the launcher version as '' and warned of a phantom mismatch.  The
+    cap is generous now so a longer docstring can't reintroduce the false
+    positive; these helper files are small so reading further is cheap.
     """
     try:
         with open(path, "r", encoding="utf-8") as fh:
             for i, line in enumerate(fh):
-                if i >= 30:
+                if i >= 200:
                     break
                 line = line.strip()
                 if line.startswith(var_name + " ="):

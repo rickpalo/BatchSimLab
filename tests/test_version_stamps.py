@@ -122,6 +122,44 @@ class TestWorkerStamps:
         assert "int(bake_seconds),\n        addon_version," in src
 
 
+class TestReadHelperVersion:
+    """BUG-017: _read_helper_version capped its scan at 30 lines, but
+    smoke_launcher.py's docstring pushes LAUNCHER_VERSION to line 33, so Run
+    Batch always read '' and warned of a phantom mismatch on every export."""
+
+    _LAUNCHER = os.path.join(os.path.dirname(__file__), "..", "scripts",
+                             "BatchSimLab", "smoke_launcher.py")
+    _WORKER = os.path.join(os.path.dirname(__file__), "..", "scripts",
+                           "BatchSimLab", "smoke_worker.py")
+
+    def test_launcher_version_is_read_not_blank(self):
+        v = ssl._read_helper_version(self._LAUNCHER, "LAUNCHER_VERSION")
+        assert v == ssl._EXPECTED_LAUNCHER_VERSION
+        assert v != ""
+
+    def test_worker_version_is_read_not_blank(self):
+        v = ssl._read_helper_version(self._WORKER, "WORKER_VERSION")
+        assert v == ssl._EXPECTED_WORKER_VERSION
+
+    def test_missing_file_returns_blank(self):
+        assert ssl._read_helper_version(self._LAUNCHER + ".nope", "LAUNCHER_VERSION") == ""
+
+    def test_version_below_old_30_line_cap_is_found(self, tmp_path):
+        # Reproduce the bug shape: VAR assignment well past line 30.
+        p = tmp_path / "helper.py"
+        p.write_text('"""\n' + "\n".join(f"doc line {i}" for i in range(40))
+                     + '\n"""\nFOO_VERSION = "1.2.3"\n', encoding="utf-8")
+        assert ssl._read_helper_version(str(p), "FOO_VERSION") == "1.2.3"
+
+    def test_does_not_match_usage_only_lines(self, tmp_path):
+        # A line that merely *uses* the name (f-string) must not be parsed as
+        # the assignment.
+        p = tmp_path / "helper.py"
+        p.write_text('print(f"BAR_VERSION {BAR_VERSION}")\nBAR_VERSION = "9.9"\n',
+                     encoding="utf-8")
+        assert ssl._read_helper_version(str(p), "BAR_VERSION") == "9.9"
+
+
 class TestLauncherCrashStamp:
     def test_crash_header_records_addon_version(self):
         src = _launcher_src()

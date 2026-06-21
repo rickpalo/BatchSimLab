@@ -1019,5 +1019,41 @@ sample count (this is also the TODO-51 samples sweep).
 
 ---
 
+## BUG-017: Phantom "Helper file version mismatch" for smoke_launcher.py on every Run Batch
+
+**Status:** `DEPLOYED / UNVERIFIED` (fixed v0.9.4, commit pending)
+**Files:** `__init__.py` — `_read_helper_version`; `SMOKE_OT_run_batch` version check (~L4600)
+
+### Symptoms
+Immediately after Export Batch, Blender's Info window showed a WARNING:
+`Helper file version mismatch — re-run Export Batch to update: smoke_launcher.py
+(found '', expected '0.6.4')` (reported by user on v0.9.0). The worker was never
+flagged — only the launcher — and re-running Export did not clear it.
+
+### Root cause
+`_read_helper_version(path, var_name)` scans only the **first 30 lines**
+(`if i >= 30: break`). `smoke_launcher.py`'s module docstring runs to line 31, so
+`LAUNCHER_VERSION = "0.6.4"` lands on **line 33** — past the cap — and the reader
+returns `""`. `smoke_worker.py` declares `WORKER_VERSION` on line 18 (within the
+cap), so the worker parsed fine. The mismatch was therefore a **false positive
+that fired on every batch** regardless of the actual exported version, because the
+exported launcher is byte-identical to the source (also line 33). `found ''`
+(empty, not a stale version) was the tell: a parse miss, not a real mismatch.
+
+### Fix (v0.9.4)
+Raise the scan cap 30 → 200 lines in `_read_helper_version` (helper files are
+small; a longer docstring can't reintroduce the miss).
+
+### Tests
+`test_version_stamps.py::TestReadHelperVersion` — reads the real launcher/worker
+versions (== `_EXPECTED_*`, not `''`); synthetic file with the VAR past line 30 is
+found; a usage-only (f-string) line isn't mis-parsed as the assignment.
+
+### Verification
+Export then Run Batch in Blender 4.5/5.1 and confirm no "Helper file version
+mismatch" warning appears when the installed addon matches the exported files.
+
+---
+
 *Document created 2026-05-11.  Append new attempts to existing issues rather than
 creating duplicate entries.*

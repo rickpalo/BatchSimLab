@@ -26,8 +26,12 @@ Repo is source of truth — verify line refs against current code before acting.
 | TODO-23 | Retry overall batch time estimate is unreliable | OPEN | — |
 | TODO-22 | Crash timing inconsistency (5-min stall vs immediate) | INSTRUMENTED (root cause open) | — |
 | TODO-61 | Finish the BatchSimLab rename — remaining `SmokeSimLab`/`smoke_*` names | OPEN | — |
-
-Also pending (not a TODO): **tag `v0.7.6` on GitHub** (built + feed live, not yet tagged).
+| TODO-56 | Docs overhaul — README/DOCUMENTATION split, fix CSV/install/features/screenshot | OPEN | — |
+| TODO-57 | Declarative `PARAM_SPECS` registry (kills shotgun-surgery + positional `combo[N]`) | OPEN | — |
+| TODO-58 | Split 6.1k-line `__init__.py` into a package | OPEN | — |
+| TODO-59 | Decompose `_poll_batch_progress_impl` + finish `draw()` section helpers | OPEN (started — `_estimate_batch_remaining` extracted v0.9.4) | — |
+| TODO-60 | Cleanup — extract `_with_slow_companion`/`_first_value`; archive `rename_to_v0_7_1.py` | OPEN | — |
+| TODO-62 | Job Log header shows worker version (+ caution icon if ≠ expected) when jobs exist | OPEN | — |
 
 ---
 
@@ -287,3 +291,92 @@ once a stalled crash is captured with this data**, then decide whether
 **Observed (v0.2.26 batch):** Two crashes in the same batch behaved differently —
 the first stalled ~5 min before the launcher moved on; the second was detected
 almost immediately.  **Files:** `smoke_launcher.py` — near WerFault post-exit poll.
+
+---
+
+## TODO-56: Documentation overhaul — **OPEN**
+
+**Filed 2026-06-21** from the design+docs review (see `DESIGN_AND_DOCS_REVIEW.md`
+Part 2). The README predates three feature waves and has outright errors. Scope:
+- **README.md → concise summary** (what it is, hero screenshot, key features,
+  install via the extension feed, quick-start, link to full docs).
+- **New `DOCUMENTATION.md` → full reference** (every parameter incl. emitters/
+  fire/timing, iteration modes, output structure, full CSV schema, text overlays,
+  troubleshooting, limitations). Point `DOCS_URL` / the HELP button at it.
+- **Fix factual errors:** results.csv is documented as **11 columns**, the worker
+  writes **23** (`smoke_worker.py` ~L1326-1353); add Fire (v0.7.0) + Time Scale/
+  Adaptive Timesteps (v0.7.0) + **Emitter/Flow batch params (v0.9.0)** to Features
+  and Parameter Reference; replace the legacy "download the zip from Releases"
+  install steps with the extension-feed flow (`docs/README.md`).
+- **Screenshots:** refresh the stale 2026-04-25 hero (`documentation/images/
+  SmokeSimLab_Panel.png`, pre-collapsible-UI, pre-emitters); fold the three
+  untracked captures in `Screenshots/` (failedJob / renderTimeEstimation /
+  slowDissolve) into `documentation/images/`; add the shortlist in review §G.
+**Severity:** HIGH (docs actively mislead). **Effort:** medium.
+
+---
+
+## TODO-57: Declarative `PARAM_SPECS` parameter registry — **OPEN**
+
+**Filed 2026-06-21** (review Part 1 #1). Adding/changing one sweepable parameter
+touches ~9 sites (`SmokeSettings` quintuplet, `_default_job`, `expand_param`,
+`generate_jobs_limited`, `generate_jobs_all`, `make_name`, worker apply, UI draw,
+CSV header+row). The worst spot is `generate_jobs_all` (`__init__.py` ~L884-909),
+which maps `itertools.product` to a dict by **positional index** `combo[0]…
+combo[16]` — inserting a param mid-list silently shifts every index. Introduce a
+single `PARAM_SPECS` table (name, default, min/max, section/enable-toggle, label,
+CSV inclusion) and drive defaults/expand/both job-gens/make_name/CSV (and ideally
+property registration + UI) from it. **Severity:** HIGH. **Effort:** large.
+Natural to pair with TODO-58. Add tests proving job-gen output is unchanged.
+
+---
+
+## TODO-58: Split the 6.1k-line `__init__.py` into a package — **OPEN**
+
+**Filed 2026-06-21** (review Part 1 #2). Everything (props, job-gen, emitter
+discovery, progress polling, operators, UI, handlers, register) lives in one
+module. Split into `properties.py`, `jobgen.py`, `emitters.py`, `settings_io.py`,
+`progress.py`, `operators.py`, `ui.py`, `__init__.py` (register only). Watch two
+extension-specific risks: **registration order** and **relative imports under
+`bl_ext.*`** (the package is installed as `bl_ext.<repo>.batchsimlab`). Keep the
+existing `from BatchSimLab import …` test entry points working (or update them as
+part of the split). **Severity:** medium. **Effort:** large; do with/after
+TODO-57. Pairs with TODO-61 Tier B (filename renames).
+
+---
+
+## TODO-59: Decompose `_poll_batch_progress_impl` + finish `draw()` helpers — **OPEN (started)**
+
+**Filed 2026-06-21** (review Part 1 #3). `_poll_batch_progress_impl` (~650 ln) is
+the live bar/ETA engine that TODO-23/31/36/46/51 keep returning to; break it into
+phase helpers (bake-bar, render-bar, all-jobs-ETA, summary). `SMOKE_PT_panel.draw`
+(~370 ln) already uses some `_*_ui` helpers — finish the pattern so `draw` just
+composes sections. **Started v0.9.4:** the all-jobs-ETA math was extracted to the
+pure, unit-tested `_estimate_batch_remaining` (TODO-46) — continue that style.
+**Severity:** medium. Bundle with the bar+ETA TODOs.
+
+---
+
+## TODO-60: Cleanup — dedup helpers + archive one-off migrator — **OPEN**
+
+**Filed 2026-06-21** (review Part 1 #4/#5; the dead `tools/smoke_launcher.py` half
+is already DONE, v0.9.3). Remaining:
+- Extract `_with_slow_companion(job)` — the slow-dissolve "flip companion" block is
+  repeated ~4× in `generate_jobs_limited` + once in `generate_jobs_all`.
+- Extract `_first_value(s, name)` — the `[expand_param(s, "X")[0]]` collapse-to-
+  first-value idiom appears ~12×.
+- Archive `tools/rename_to_v0_7_1.py` (one-time cache/render migrator) once no
+  pre-0.7.1 caches remain. **Severity:** low. **Effort:** small.
+
+---
+
+## TODO-62: Job Log header shows worker version (+ caution if mismatch) — **OPEN**
+
+**Filed 2026-06-21** (user request). When jobs exist in the Job Log, show the
+worker version in the section header, e.g. `Job Log — Worker v0.9.1`. If the
+exported worker version ≠ `_EXPECTED_WORKER_VERSION`, show a caution icon (`ERROR`/
+` pre-existing alert) next to it. Reuse `_read_helper_version(worker_path,
+"WORKER_VERSION")` (now fixed by BUG-017) against the batch `output_path`; only
+read once per poll/transition, not every draw (draw must stay cheap — see BUG-015).
+Consider also showing the launcher version. **Severity:** low (clarity/diagnostic).
+**Effort:** small.
