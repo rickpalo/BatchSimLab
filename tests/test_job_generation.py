@@ -4,7 +4,7 @@ import types
 import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
 
-from SmokeSimLab import (
+from BatchSimLab import (
     expand_param,
     generate_jobs_limited,
     generate_jobs_all,

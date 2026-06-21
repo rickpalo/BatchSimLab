@@ -8,7 +8,7 @@ checked at the source level (cf. test_smoke_launcher.py)."""
 import pathlib
 
 _WORKER_SRC = (pathlib.Path(__file__).resolve().parent.parent
-               / "scripts" / "SmokeSimLab" / "smoke_worker.py")
+               / "scripts" / "BatchSimLab" / "smoke_worker.py")
 
 
 def _load_overlay():

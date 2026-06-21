@@ -5,7 +5,7 @@ import json
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
 
-from SmokeSimLab import (
+from BatchSimLab import (
     _find_next_job_index,
     _existing_jobs_for_bat,
     _job_run_cmd,
@@ -254,13 +254,13 @@ class TestPhasedSentinelRegexes:
     """The unphased sentinel matchers must EXCLUDE the per-phase variants so the
     poll/summary don't over-count completed jobs in the two-pass pipeline."""
     def test_unphased_done_matches(self):
-        from SmokeSimLab import _DONE_RE, _RETRY_DONE_RE, _CRASHED_RE
+        from BatchSimLab import _DONE_RE, _RETRY_DONE_RE, _CRASHED_RE
         assert _DONE_RE.match("job_0000.done")
         assert _RETRY_DONE_RE.match("job_0007_retry.done")
         assert _CRASHED_RE.match("job_0003.crashed")
 
     def test_phased_done_does_NOT_match_unphased(self):
-        from SmokeSimLab import _DONE_RE, _RETRY_DONE_RE, _CRASHED_RE
+        from BatchSimLab import _DONE_RE, _RETRY_DONE_RE, _CRASHED_RE
         for f in ("job_0000.bake.done", "job_0000.render.done"):
             assert not _DONE_RE.match(f), f"{f} must not match _DONE_RE"
             assert not _RETRY_DONE_RE.match(f), f"{f} must not match _RETRY_DONE_RE"
@@ -268,7 +268,7 @@ class TestPhasedSentinelRegexes:
             assert not _CRASHED_RE.match(f), f"{f} must not match _CRASHED_RE"
 
     def test_phased_done_matchers(self):
-        from SmokeSimLab import _BAKE_DONE_RE, _RENDER_DONE_RE
+        from BatchSimLab import _BAKE_DONE_RE, _RENDER_DONE_RE
         assert _BAKE_DONE_RE.match("job_0000.bake.done")
         assert _RENDER_DONE_RE.match("job_0042.render.done")
         # And don't cross-match

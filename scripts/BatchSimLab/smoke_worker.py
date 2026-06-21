@@ -7,8 +7,8 @@ Called by run_smoke_batch.bat as:
     blender.exe "<blend>" --background --factory-startup
         --python "<path>/smoke_worker.py" -- "<path>/job_NNNN.json"
 
-Keep this file in the addon folder (still named `SmokeSimLab/` on disk per
-the v0.6.3 surface-only rebrand) alongside __init__.py.
+Keep this file in the addon folder (`BatchSimLab/` on disk) alongside
+__init__.py.
 export_batch() copies it to the output folder automatically.
 
 Applies fluid parameters, bakes, renders playblast MP4 + final still PNG,

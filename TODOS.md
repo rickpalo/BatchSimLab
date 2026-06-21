@@ -25,8 +25,44 @@ Repo is source of truth — verify line refs against current code before acting.
 | TODO-24 | Per-frame bake timing not collected | OPEN | — |
 | TODO-23 | Retry overall batch time estimate is unreliable | OPEN | — |
 | TODO-22 | Crash timing inconsistency (5-min stall vs immediate) | INSTRUMENTED (root cause open) | — |
+| TODO-61 | Finish the BatchSimLab rename — remaining `SmokeSimLab`/`smoke_*` names | OPEN | — |
 
 Also pending (not a TODO): **tag `v0.7.6` on GitHub** (built + feed live, not yet tagged).
+
+---
+
+## TODO-61: Finish the BatchSimLab rename — remaining `SmokeSimLab` / `smoke_*` names — **OPEN**
+
+The GitHub repo + source folder/package were renamed `SmokeSimLab → BatchSimLab`
+in **v0.9.3** (repo renamed on GitHub, `scripts/SmokeSimLab/ → scripts/BatchSimLab/`,
+all imports/paths/URLs updated, feed moved to
+`https://rickpalo.github.io/BatchSimLab/index.json`). This TODO tracks the
+**remaining** legacy names deliberately left behind, to be cleared "in a lull."
+
+**Tier A — .blend / keymap-breaking (needs a migration plan, NOT a blind rename):**
+- `scene.smoke_settings` PointerProperty → renaming orphans settings stored in
+  existing `.blend` saves.
+- `SMOKE_*` class prefix + `smoke.*` operator `bl_idname`s → renaming breaks user
+  keymaps and any scripted calls.
+- `.smokesettings` preset file extension → renaming orphans saved presets.
+- Approach when picked up: add the new names alongside, with a one-time
+  load_post migration (copy old PropertyGroup data → new) + back-compat aliases,
+  then deprecate. Don't do this without that shim.
+
+**Tier B — safe Python/identifier renames (no .blend impact):**
+- `SmokeSimLabPreferences` class ([__init__.py](scripts/BatchSimLab/__init__.py)) → `BatchSimLabPreferences`.
+- `smoke_worker.py` / `smoke_launcher.py` filenames (referenced in worker-copy
+  logic + export + tests + `_EXPECTED_*_VERSION`) → `batch_worker.py` etc.
+
+**Tier C — docs / cosmetics (no functional risk):**
+- `tools/analyze_estim.py` + `tools/analyze_perf.py` print/docstring brand text.
+- `scripts/preflight_inspector.py` titles + ACTION strings (+ its addon-key
+  detection still looks for a legacy module key).
+- Stale `documentation/SmokeSimLab_Documentation.html` (v0.1.38) +
+  `documentation/images/SmokeSimLab_Panel.png` → fold into the TODO-56 docs
+  overhaul; rename assets then.
+- Legacy `SmokeSimLab.zip` artifact name in README/RELEASING install instructions
+  (the extension build already produces `batchsimlab-<ver>.zip`).
 
 ---
 

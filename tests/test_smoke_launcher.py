@@ -6,7 +6,7 @@ import py_compile
 import sys
 from unittest.mock import MagicMock, patch
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts", "SmokeSimLab"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts", "BatchSimLab"))
 
 from smoke_launcher import (
     _find_werfault_for_pid, _save_crash_log, _write_crashed_marker,
@@ -18,7 +18,7 @@ from smoke_launcher import (
 # Worker/launcher syntax validation — regression guard for silent parse errors
 # ---------------------------------------------------------------------------
 
-_SCRIPTS_DIR = os.path.join(os.path.dirname(__file__), "..", "scripts", "SmokeSimLab")
+_SCRIPTS_DIR = os.path.join(os.path.dirname(__file__), "..", "scripts", "BatchSimLab")
 
 
 class TestWorkerSyntax:

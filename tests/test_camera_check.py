@@ -5,7 +5,7 @@ import types
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
 
-import SmokeSimLab as ssl
+import BatchSimLab as ssl
 
 
 class _StubObj:
@@ -46,7 +46,7 @@ class TestExportBatchWiring:
     independently."""
     def _src(self):
         path = os.path.join(os.path.dirname(__file__), "..",
-                            "scripts", "SmokeSimLab", "__init__.py")
+                            "scripts", "BatchSimLab", "__init__.py")
         with open(path, encoding="utf-8") as fh:
             return fh.read()
 
@@ -70,7 +70,7 @@ class TestRunBatchWiring:
     render-on case (the save-before dialog removed in v0.4.1 stays gone)."""
     def _src(self):
         path = os.path.join(os.path.dirname(__file__), "..",
-                            "scripts", "SmokeSimLab", "__init__.py")
+                            "scripts", "BatchSimLab", "__init__.py")
         with open(path, encoding="utf-8") as fh:
             return fh.read()
 

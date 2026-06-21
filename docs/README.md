@@ -9,7 +9,7 @@ Edit → Preferences → Get Extensions → **Repositories** (top-left ▾) → 
 Remote Repository**, then paste:
 
 ```
-https://rickpalo.github.io/smokeSimulationLab/index.json
+https://rickpalo.github.io/BatchSimLab/index.json
 ```
 
 Enable it, then **Get Extensions** lists *BatchSimLab* for install/update. Future
@@ -26,7 +26,7 @@ From the repo root:
 
 ```sh
 # 1. build the new zip into the feed folder
-blender --command extension build --source-dir scripts/SmokeSimLab --output-dir docs
+blender --command extension build --source-dir scripts/BatchSimLab --output-dir docs
 # 2. regenerate the index from whatever zips are present
 blender --command extension server-generate --repo-dir docs
 # 3. commit + push docs/ ; Pages redeploys in ~1 min

@@ -52,10 +52,10 @@ bundle was not done first; this shipped the emitter feature ahead of it.)_
 ## TODO-54: RELEASING.md describes a release-copy layout that doesn't exist — **DONE** (2026-06-16)
 
 **Doc-only.**  Rewrote RELEASING.md's "Repository structure" + numbered steps to
-match reality: a single tracked source tree at `scripts/SmokeSimLab/`, no
+match reality: a single tracked source tree at `scripts/BatchSimLab/`, no
 `SmokeSimLab/` release-copy dir and no copy step (the old doc described a
 two-directory workflow that never existed); releases build straight from
-`scripts/SmokeSimLab/` into `dist/` (ignored) / `docs/` (feed).  No code, no
+`scripts/BatchSimLab/` into `dist/` (ignored) / `docs/` (feed).  No code, no
 version bump.
 
 ---

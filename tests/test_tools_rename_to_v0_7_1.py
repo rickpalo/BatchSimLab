@@ -175,12 +175,12 @@ class TestPassthroughBehaviour:
 class TestRoundTripWithAddon:
     def test_migrator_leaves_addon_output_alone(self):
         # Import the addon's make_name (needs bpy stub from conftest).
-        # sys.path needs the PARENT of SmokeSimLab/ for `import SmokeSimLab`
+        # sys.path needs the PARENT of SmokeSimLab/ for `import BatchSimLab`
         # to resolve as a package.
         sys.path.insert(
             0, os.path.join(os.path.dirname(__file__), "..", "scripts"),
         )
-        from SmokeSimLab import make_name
+        from BatchSimLab import make_name
 
         p = dict(
             resolution=128, vorticity=0.25, alpha=1.0, beta=0.5,

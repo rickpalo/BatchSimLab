@@ -13,7 +13,7 @@ import re
 
 def _worker_src():
     p = os.path.join(os.path.dirname(__file__), "..",
-                     "scripts", "SmokeSimLab", "smoke_worker.py")
+                     "scripts", "BatchSimLab", "smoke_worker.py")
     with open(p, encoding="utf-8") as fh:
         return fh.read()
 

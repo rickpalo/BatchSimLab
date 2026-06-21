@@ -16,7 +16,7 @@ import tempfile
 import pytest
 
 
-_WORKER_SRC = pathlib.Path(__file__).resolve().parent.parent / "scripts" / "SmokeSimLab" / "smoke_worker.py"
+_WORKER_SRC = pathlib.Path(__file__).resolve().parent.parent / "scripts" / "BatchSimLab" / "smoke_worker.py"
 
 
 def _load_helpers():

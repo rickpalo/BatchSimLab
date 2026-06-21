@@ -15,7 +15,7 @@ import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
 
-from SmokeSimLab import _find_running_log
+from BatchSimLab import _find_running_log
 
 
 def _make_log(path, content, mtime):

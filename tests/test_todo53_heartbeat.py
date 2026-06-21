@@ -8,11 +8,11 @@ import os
 import re
 import sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts", "SmokeSimLab"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts", "BatchSimLab"))
 
 import smoke_launcher as sl
 
-_SCRIPTS_DIR = os.path.join(os.path.dirname(__file__), "..", "scripts", "SmokeSimLab")
+_SCRIPTS_DIR = os.path.join(os.path.dirname(__file__), "..", "scripts", "BatchSimLab")
 
 
 def _src():
@@ -98,6 +98,6 @@ class TestLauncherVersion:
     def test_addon_expected_matches_launcher(self):
         # The addon's version gate must match the shipped launcher.
         sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
-        import SmokeSimLab as ssl
+        import BatchSimLab as ssl
         m = re.search(r'^LAUNCHER_VERSION = "(\d+\.\d+\.\d+)"', _src(), re.MULTILINE)
         assert ssl._EXPECTED_LAUNCHER_VERSION == m.group(1)

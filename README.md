@@ -6,7 +6,7 @@ BatchSimLab (renamed from SmokeSimLab at v0.6.3) automates the tedious process o
 
 **Roadmap:** smoke today (v0.x → v1.0.0), smoke + fire at v2.0.0, smoke + fire + liquid at v3.0.0. The "BatchSim" name reflects the broader scope.
 
-> The GitHub repository slug is still `SmokeSimLab` (https://github.com/rickpalo/SmokeSimLab) — v0.6.3 is a surface-only rebrand; folder names, file names, and the GitHub URL stay unchanged for backwards compatibility with existing installs.
+> The GitHub repository lives at https://github.com/rickpalo/BatchSimLab. The repo and source folder were renamed from `SmokeSimLab` at v0.9.3; the lowercase runtime identifiers (`smoke_settings`, `SMOKE_*` classes, `.smokesettings` presets) still use the legacy prefix for backwards compatibility with existing `.blend` saves and keymaps.
 
 ![Batch Sim Lab Panel](documentation/images/SmokeSimLab_Panel.png)
 
@@ -49,7 +49,7 @@ BatchSimLab (renamed from SmokeSimLab at v0.6.3) automates the tedious process o
 
 ## Installation
 
-1. Download the latest `SmokeSimLab.zip` from the [Releases](https://github.com/rickpalo/SmokeSimLab/releases) page (zip filename retains the legacy name).
+1. Download the latest `SmokeSimLab.zip` from the [Releases](https://github.com/rickpalo/BatchSimLab/releases) page (zip filename retains the legacy name).
 2. In Blender, open **Edit → Preferences → Add-ons**.
 3. Click **Install** and select `SmokeSimLab.zip`.
 4. Enable the **BatchSimLab** addon in the list.
@@ -217,10 +217,10 @@ This was a known issue (BUG-001) in Blender 5.x. Addressed in v0.2.16 (uses Blen
 
 ## License
 
-MIT License. See [LICENSE](LICENSE) for details.
+GPL-2.0-or-later. See [LICENSE](LICENSE) for details.
 
 ---
 
 ## Contributing
 
-Bug reports and pull requests are welcome on the [GitHub repository](https://github.com/rickpalo/SmokeSimLab).
+Bug reports and pull requests are welcome on the [GitHub repository](https://github.com/rickpalo/BatchSimLab).

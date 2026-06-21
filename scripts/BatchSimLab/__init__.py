@@ -11,13 +11,15 @@ logs results to a CSV file for later comparison.
 
 History note: this addon was originally branded "SmokeSimLab"; v0.6.3
 rebranded it to "BatchSimLab" in preparation for the v2.0.0 (fire) and
-v3.0.0 (fluid) roadmap.  Internal Python identifiers, folder names, and
-operator IDs retain the "smoke*" prefix for backwards compatibility with
-existing .blend saves and keymaps; the rename is surface-only.
+v3.0.0 (fluid) roadmap.  The source folder/package was renamed
+SmokeSimLab -> BatchSimLab at v0.9.3.  Lowercase runtime identifiers and
+operator IDs retain the "smoke*" prefix (e.g. scene.smoke_settings, SMOKE_*
+classes, .smokesettings presets) for backwards compatibility with existing
+.blend saves and keymaps; that part of the rename is deliberately deferred.
 
 Installation
 ------------
-1. Zip the SmokeSimLab folder (containing __init__.py + smoke_worker.py +
+1. Zip the BatchSimLab folder (containing __init__.py + smoke_worker.py +
    smoke_launcher.py).
 2. In Blender: Edit → Preferences → Add-ons → Install → select the zip.
 3. Enable "BatchSimLab" in the add-on list.
@@ -39,7 +41,7 @@ Workflow
 
 Documentation
 -------------
-Full documentation: https://github.com/rickpalo/SmokeSimLab
+Full documentation: https://github.com/rickpalo/BatchSimLab
 
 Requires Blender 4.x (tested on 4.5.5 and 5.1.1) on Windows 10/11.  May work on other OSes but the batch export is
 """
@@ -51,13 +53,13 @@ Requires Blender 4.x (tested on 4.5.5 and 5.1.1) on Windows 10/11.  May work on 
 bl_info = {
     "name":        "BatchSimLab",
     "author":      "Rick Palo",
-    "version":     (0, 9, 2),
+    "version":     (0, 9, 3),
     "blender":     (4, 0, 0),
     "location":    "View3D > Sidebar > BatchLab",
     "description": "Batch smoke simulation parameter sweeper with CSV logging "
                    "(roadmap: fire @ v2.0.0, fluid @ v3.0.0)",
-    "doc_url":     "https://github.com/rickpalo/SmokeSimLab",
-    "tracker_url": "https://github.com/rickpalo/SmokeSimLab/issues",
+    "doc_url":     "https://github.com/rickpalo/BatchSimLab",
+    "tracker_url": "https://github.com/rickpalo/BatchSimLab/issues",
     "category":    "Fluid Simulation",
 }
 
@@ -77,10 +79,10 @@ ADDON_VERSION = ".".join(str(v) for v in bl_info["version"])
 print(f"BatchSimLab {ADDON_VERSION} loaded")
 
 
-# GitHub repo URL — repository slug stays "SmokeSimLab" for v0.6.3 surface
-# rebrand (no folder/repo rename in this version).  Future repository
-# migration could happen at v1.0.0 alongside the deeper internal rename.
-DOCS_URL = "https://github.com/rickpalo/SmokeSimLab"
+# GitHub repo URL.  The repository and source folder are now "BatchSimLab";
+# only the lowercase runtime identifiers (smoke_settings, SMOKE_*, .smokesettings)
+# still use the legacy "smoke" prefix for .blend/keymap compatibility.
+DOCS_URL = "https://github.com/rickpalo/BatchSimLab"
 
 # Expected version strings in the helper files exported to the output folder.
 # When Run Batch detects a mismatch it warns the user to re-run Export Batch.
@@ -1765,8 +1767,8 @@ def export_batch(context):
 
     # ── Locate and copy worker script ────────────────────────────────────────
     # __file__ is reliable here because we are installed as a proper addon,
-    # so it points to the addon's folder (still `SmokeSimLab/` on disk per
-    # v0.6.3 surface rename — see module docstring), not the .blend file.
+    # so it points to the addon's folder (`BatchSimLab/` on disk), not the
+    # .blend file.
     addon_dir      = os.path.dirname(os.path.abspath(__file__))
     src_worker     = os.path.join(addon_dir, "smoke_worker.py")
     dest_worker    = os.path.join(output_path, "smoke_worker.py")

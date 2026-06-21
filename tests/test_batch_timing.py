@@ -16,7 +16,7 @@ import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
 
-from SmokeSimLab import _bt, _bt_set, _bt_reset_all, _batch_times
+from BatchSimLab import _bt, _bt_set, _bt_reset_all, _batch_times
 
 
 def _f32(x):

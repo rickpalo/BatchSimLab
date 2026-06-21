@@ -15,7 +15,7 @@ import pytest
 
 
 def _addon_src():
-    p = os.path.join(os.path.dirname(__file__), "..", "scripts", "SmokeSimLab",
+    p = os.path.join(os.path.dirname(__file__), "..", "scripts", "BatchSimLab",
                      "__init__.py")
     with open(p, encoding="utf-8") as fh:
         return fh.read()

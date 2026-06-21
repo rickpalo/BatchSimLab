@@ -6,7 +6,7 @@ import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
 
-from SmokeSimLab import _count_png_frames, _find_running_log, _format_eta, _STAGES
+from BatchSimLab import _count_png_frames, _find_running_log, _format_eta, _STAGES
 
 # Regression: _format_eta must never produce negative strings.
 
@@ -305,7 +305,7 @@ class TestFindRunningLog:
 # ---------------------------------------------------------------------------
 
 _WORKER_PATH = os.path.join(
-    os.path.dirname(__file__), "..", "scripts", "SmokeSimLab", "smoke_worker.py"
+    os.path.dirname(__file__), "..", "scripts", "BatchSimLab", "smoke_worker.py"
 )
 
 

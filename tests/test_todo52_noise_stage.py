@@ -9,9 +9,9 @@ import sys
 import json
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts", "SmokeSimLab"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts", "BatchSimLab"))
 
-from SmokeSimLab import _STAGES, _count_vdb_frames
+from BatchSimLab import _STAGES, _count_vdb_frames
 
 
 def _stage_for(tail):

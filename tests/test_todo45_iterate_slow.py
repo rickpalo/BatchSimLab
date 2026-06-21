@@ -13,9 +13,9 @@ from types import SimpleNamespace
 import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts", "SmokeSimLab"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts", "BatchSimLab"))
 
-from SmokeSimLab import generate_jobs_limited, generate_jobs_all
+from BatchSimLab import generate_jobs_limited, generate_jobs_all
 
 
 def _item(value):

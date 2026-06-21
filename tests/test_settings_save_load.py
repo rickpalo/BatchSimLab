@@ -4,7 +4,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
 
-from SmokeSimLab import (
+from BatchSimLab import (
     _settings_dict, _apply_settings_dict, _is_settings_dirty,
     _load_settings_from_path, _SWEEP_PARAMS,
 )

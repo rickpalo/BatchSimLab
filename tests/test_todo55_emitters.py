@@ -11,7 +11,7 @@ import types
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
 
-import SmokeSimLab as ssl
+import BatchSimLab as ssl
 
 
 # --- stubs ----------------------------------------------------------------
@@ -319,7 +319,7 @@ class TestEmitterSettingsSchema:
 
 def _src():
     path = os.path.join(os.path.dirname(__file__), "..",
-                        "scripts", "SmokeSimLab", "__init__.py")
+                        "scripts", "BatchSimLab", "__init__.py")
     with open(path, encoding="utf-8") as fh:
         return fh.read()
 

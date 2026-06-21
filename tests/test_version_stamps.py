@@ -4,19 +4,19 @@ import os
 import json
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts", "SmokeSimLab"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts", "BatchSimLab"))
 
-import SmokeSimLab as ssl
+import BatchSimLab as ssl
 
 
 def _worker_src():
-    p = os.path.join(os.path.dirname(__file__), "..", "scripts", "SmokeSimLab", "smoke_worker.py")
+    p = os.path.join(os.path.dirname(__file__), "..", "scripts", "BatchSimLab", "smoke_worker.py")
     with open(p, encoding="utf-8") as fh:
         return fh.read()
 
 
 def _launcher_src():
-    p = os.path.join(os.path.dirname(__file__), "..", "scripts", "SmokeSimLab", "smoke_launcher.py")
+    p = os.path.join(os.path.dirname(__file__), "..", "scripts", "BatchSimLab", "smoke_launcher.py")
     with open(p, encoding="utf-8") as fh:
         return fh.read()
 
@@ -60,7 +60,7 @@ class TestPanelDrawUsesAddonVersion:
         not just SMOKE_PT_panel.draw."""
         import ast
         path = os.path.join(os.path.dirname(__file__), "..",
-                            "scripts", "SmokeSimLab", "__init__.py")
+                            "scripts", "BatchSimLab", "__init__.py")
         with open(path, encoding="utf-8") as fh:
             tree = ast.parse(fh.read(), filename=path)
         offenders = []

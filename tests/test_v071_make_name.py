@@ -16,9 +16,9 @@ import sys
 import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts", "SmokeSimLab"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts", "BatchSimLab"))
 
-from SmokeSimLab import make_name, _fmt_num
+from BatchSimLab import make_name, _fmt_num
 
 
 def _base(**overrides):

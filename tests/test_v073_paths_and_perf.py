@@ -6,13 +6,13 @@ import os
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts", "SmokeSimLab"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts", "BatchSimLab"))
 
-import SmokeSimLab as ssl
+import BatchSimLab as ssl
 
 
 def _worker_src():
-    p = os.path.join(os.path.dirname(__file__), "..", "scripts", "SmokeSimLab", "smoke_worker.py")
+    p = os.path.join(os.path.dirname(__file__), "..", "scripts", "BatchSimLab", "smoke_worker.py")
     with open(p, encoding="utf-8") as fh:
         return fh.read()
 

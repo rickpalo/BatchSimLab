@@ -60,17 +60,17 @@ def _find_smokeSimLab():
     if hasattr(scene, 'smoke_settings'):
         s = scene.smoke_settings
         if hasattr(s, 'output_path') and hasattr(s, 'job_log_items'):
-            mod = sys.modules.get('SmokeSimLab')
+            mod = sys.modules.get('BatchSimLab')
             return mod, s, "LOADED"
 
     # Installed but not registered (disabled in Preferences)
-    if any('SmokeSimLab' in k for k in bpy.context.preferences.addons.keys()):
+    if any('BatchSimLab' in k for k in bpy.context.preferences.addons.keys()):
         return None, None, "INSTALLED_BUT_NOT_REGISTERED"
 
     # Importable via sys.path (not installed as an addon)
     try:
         import importlib
-        mod = importlib.import_module('SmokeSimLab')
+        mod = importlib.import_module('BatchSimLab')
         return mod, None, "IMPORTABLE_NOT_REGISTERED"
     except ImportError:
         pass

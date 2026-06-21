@@ -6,7 +6,7 @@ import types
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
 
-from SmokeSimLab import _batch_ready, _on_render_sim_result_update
+from BatchSimLab import _batch_ready, _on_render_sim_result_update
 
 
 # ── TODO-25: Run Batch button enabled only when a runnable batch exists ───────
@@ -72,7 +72,7 @@ class TestWorkerRenderGuard:
     bake-only skip and its backwards-compatible default)."""
     def _worker_src(self):
         path = os.path.join(os.path.dirname(__file__), "..",
-                            "scripts", "SmokeSimLab", "smoke_worker.py")
+                            "scripts", "BatchSimLab", "smoke_worker.py")
         with open(path, encoding="utf-8") as fh:
             return fh.read()
 
@@ -97,7 +97,7 @@ class TestWorkerBakeFrameRange:
     assert the assignment exists in source."""
     def _worker_src(self):
         path = os.path.join(os.path.dirname(__file__), "..",
-                            "scripts", "SmokeSimLab", "smoke_worker.py")
+                            "scripts", "BatchSimLab", "smoke_worker.py")
         with open(path, encoding="utf-8") as fh:
             return fh.read()
 
@@ -114,7 +114,7 @@ class TestWorkerResumeNoReload:
     to run in windowed (EEVEE) mode and the worker hangs forever on the bake."""
     def _worker_src(self):
         path = os.path.join(os.path.dirname(__file__), "..",
-                            "scripts", "SmokeSimLab", "smoke_worker.py")
+                            "scripts", "BatchSimLab", "smoke_worker.py")
         with open(path, encoding="utf-8") as fh:
             return fh.read()
 
@@ -133,7 +133,7 @@ class TestWorkerPhaseSplit:
     imported; assert the gating exists in source."""
     def _src(self):
         path = os.path.join(os.path.dirname(__file__), "..",
-                            "scripts", "SmokeSimLab", "smoke_worker.py")
+                            "scripts", "BatchSimLab", "smoke_worker.py")
         with open(path, encoding="utf-8") as fh:
             return fh.read()
 
@@ -159,7 +159,7 @@ class TestWorkerFinalStillCopy:
     sequence rather than a duplicate render."""
     def _src(self):
         path = os.path.join(os.path.dirname(__file__), "..",
-                            "scripts", "SmokeSimLab", "smoke_worker.py")
+                            "scripts", "BatchSimLab", "smoke_worker.py")
         with open(path, encoding="utf-8") as fh:
             return fh.read()
 
@@ -186,7 +186,7 @@ class TestRenderAnimationGate:
     + MP4 but still produces <name>.png via the final-still path."""
     def _src(self):
         path = os.path.join(os.path.dirname(__file__), "..",
-                            "scripts", "SmokeSimLab", "smoke_worker.py")
+                            "scripts", "BatchSimLab", "smoke_worker.py")
         with open(path, encoding="utf-8") as fh:
             return fh.read()
 
@@ -204,7 +204,7 @@ class TestRenderAnimationGate:
 
     def test_export_writes_render_animation_field(self):
         import inspect
-        import SmokeSimLab as ssl
+        import BatchSimLab as ssl
         src = inspect.getsource(ssl.export_batch)
         assert '"render_animation":         s.render_animation' in src
 
@@ -220,7 +220,7 @@ class TestJobLogPhaseAwareStatus:
         SmokeSettings that _update_job_log_statuses will accept."""
         import time as _t
         import types as _types
-        import SmokeSimLab as ssl
+        import BatchSimLab as ssl
 
         jobs = tmp_path / "jobs"
         jobs.mkdir()
@@ -270,7 +270,7 @@ class TestJobLogPhaseAwareStatus:
         assert ssl._job_statuses[1] == 'IN_PROGRESS'
 
     def test_status_icons_include_rendering(self):
-        import SmokeSimLab as ssl
+        import BatchSimLab as ssl
         icons = ssl.SMOKE_UL_job_log._STATUS_ICONS
         prefix = ssl.SMOKE_UL_job_log._STATUS_PREFIX
         assert 'RENDERING' in icons
@@ -285,7 +285,7 @@ class TestRenderPhaseFastFail:
     plus wipe the partial cache so auto-retry takes the FULL-bake path."""
     def _src(self):
         path = os.path.join(os.path.dirname(__file__), "..",
-                            "scripts", "SmokeSimLab", "smoke_worker.py")
+                            "scripts", "BatchSimLab", "smoke_worker.py")
         with open(path, encoding="utf-8") as fh:
             return fh.read()
 

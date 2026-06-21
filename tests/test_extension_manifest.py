@@ -9,12 +9,12 @@ import sys
 import tomllib
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts", "SmokeSimLab"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts", "BatchSimLab"))
 
-import SmokeSimLab as ssl
+import BatchSimLab as ssl
 
 _MANIFEST = os.path.join(
-    os.path.dirname(__file__), "..", "scripts", "SmokeSimLab", "blender_manifest.toml"
+    os.path.dirname(__file__), "..", "scripts", "BatchSimLab", "blender_manifest.toml"
 )
 
 
