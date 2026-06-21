@@ -626,6 +626,17 @@ def expand_param(s, name):
     return [begin]
 
 
+def _first_value(s, name):
+    """Return the first (default) value of iterable parameter *name*.
+
+    Shorthand for the ``expand_param(s, name)[0]`` idiom used throughout job
+    generation to hold a parameter at its default while another sweeps.
+    ``expand_param`` always returns a non-empty list, so ``[0]`` is safe.
+    (TODO-60 dedup.)
+    """
+    return expand_param(s, name)[0]
+
+
 def _default_job(s):
     """
     Return a job-parameter dict using the effective default value for every
@@ -637,30 +648,30 @@ def _default_job(s):
     parameter sweeps rather than falling back to the raw default.
     """
     return {
-        "resolution":          expand_param(s, "resolution")[0],
-        "vorticity":           expand_param(s, "vorticity")[0],
-        "alpha":               expand_param(s, "alpha")[0],
-        "beta":                expand_param(s, "beta")[0],
-        "dissolve_speed":      expand_param(s, "dissolve_speed")[0],
-        "noise_upres":         expand_param(s, "noise_upres")[0],
-        "noise_strength":      expand_param(s, "noise_strength")[0],
-        "noise_spatial_scale": expand_param(s, "noise_spatial_scale")[0],
+        "resolution":          _first_value(s, "resolution"),
+        "vorticity":           _first_value(s, "vorticity"),
+        "alpha":               _first_value(s, "alpha"),
+        "beta":                _first_value(s, "beta"),
+        "dissolve_speed":      _first_value(s, "dissolve_speed"),
+        "noise_upres":         _first_value(s, "noise_upres"),
+        "noise_strength":      _first_value(s, "noise_strength"),
+        "noise_spatial_scale": _first_value(s, "noise_spatial_scale"),
         "use_dissolve":        s.use_dissolve,
         "slow_dissolve":       s.slow_dissolve,
         "use_noise":           s.use_noise,
         # v0.7.0 TODO-41: gas timing parameters
-        "time_scale":          expand_param(s, "time_scale")[0],
+        "time_scale":          _first_value(s, "time_scale"),
         "use_adaptive_timesteps": getattr(s, "use_adaptive_timesteps", True),
-        "cfl_number":          expand_param(s, "cfl_number")[0],
-        "timesteps_max":       expand_param(s, "timesteps_max")[0],
-        "timesteps_min":       expand_param(s, "timesteps_min")[0],
+        "cfl_number":          _first_value(s, "cfl_number"),
+        "timesteps_max":       _first_value(s, "timesteps_max"),
+        "timesteps_min":       _first_value(s, "timesteps_min"),
         # v0.7.0 TODO-42: fire parameters
         "use_fire":            getattr(s, "use_fire", False),
-        "burning_rate":        expand_param(s, "burning_rate")[0],
-        "flame_smoke":         expand_param(s, "flame_smoke")[0],
-        "flame_vorticity":     expand_param(s, "flame_vorticity")[0],
-        "flame_max_temp":      expand_param(s, "flame_max_temp")[0],
-        "flame_ignition":      expand_param(s, "flame_ignition")[0],
+        "burning_rate":        _first_value(s, "burning_rate"),
+        "flame_smoke":         _first_value(s, "flame_smoke"),
+        "flame_vorticity":     _first_value(s, "flame_vorticity"),
+        "flame_max_temp":      _first_value(s, "flame_max_temp"),
+        "flame_ignition":      _first_value(s, "flame_ignition"),
     }
 
 
@@ -832,9 +843,9 @@ def generate_jobs_all(s):
             dissolve_states.append((True, not s.slow_dissolve, param("dissolve_speed")))
         if s.iterate_dissolve_both:
             # use_dissolve=False — slow doesn't apply, no slow-flip companion.
-            dissolve_states.append((False, s.slow_dissolve, [expand_param(s, "dissolve_speed")[0]]))
+            dissolve_states.append((False, s.slow_dissolve, [_first_value(s, "dissolve_speed")]))
     else:
-        dissolve_states = [(False, s.slow_dissolve, [expand_param(s, "dissolve_speed")[0]])]
+        dissolve_states = [(False, s.slow_dissolve, [_first_value(s, "dissolve_speed")])]
 
     # Build the set of (use_noise, nu, ns, nss) states.
     if s.use_noise:
@@ -844,14 +855,14 @@ def generate_jobs_all(s):
                          param("noise_spatial_scale"))]
         if s.iterate_noise_both:
             noise_states.append((False,
-                                  [expand_param(s, "noise_upres")[0]],
-                                  [expand_param(s, "noise_strength")[0]],
-                                  [expand_param(s, "noise_spatial_scale")[0]]))
+                                  [_first_value(s, "noise_upres")],
+                                  [_first_value(s, "noise_strength")],
+                                  [_first_value(s, "noise_spatial_scale")]))
     else:
         noise_states = [(False,
-                         [expand_param(s, "noise_upres")[0]],
-                         [expand_param(s, "noise_strength")[0]],
-                         [expand_param(s, "noise_spatial_scale")[0]])]
+                         [_first_value(s, "noise_upres")],
+                         [_first_value(s, "noise_strength")],
+                         [_first_value(s, "noise_spatial_scale")])]
 
     # v0.7.0 TODO-41: gas-timing axes always present in the product.
     # Adaptive-only sub-params (cfl_number, timesteps_*) collapse to their
@@ -863,9 +874,9 @@ def generate_jobs_all(s):
         timesteps_max_vals = param("timesteps_max")
         timesteps_min_vals = param("timesteps_min")
     else:
-        cfl_vals           = [expand_param(s, "cfl_number")[0]]
-        timesteps_max_vals = [expand_param(s, "timesteps_max")[0]]
-        timesteps_min_vals = [expand_param(s, "timesteps_min")[0]]
+        cfl_vals           = [_first_value(s, "cfl_number")]
+        timesteps_max_vals = [_first_value(s, "timesteps_max")]
+        timesteps_min_vals = [_first_value(s, "timesteps_min")]
 
     # v0.7.0 TODO-42: fire sub-params collapse to single values when fire is off.
     use_fire = getattr(s, "use_fire", False)
@@ -876,11 +887,11 @@ def generate_jobs_all(s):
         flame_max_temp_vals  = param("flame_max_temp")
         flame_ignition_vals  = param("flame_ignition")
     else:
-        burning_rate_vals    = [expand_param(s, "burning_rate")[0]]
-        flame_smoke_vals     = [expand_param(s, "flame_smoke")[0]]
-        flame_vorticity_vals = [expand_param(s, "flame_vorticity")[0]]
-        flame_max_temp_vals  = [expand_param(s, "flame_max_temp")[0]]
-        flame_ignition_vals  = [expand_param(s, "flame_ignition")[0]]
+        burning_rate_vals    = [_first_value(s, "burning_rate")]
+        flame_smoke_vals     = [_first_value(s, "flame_smoke")]
+        flame_vorticity_vals = [_first_value(s, "flame_vorticity")]
+        flame_max_temp_vals  = [_first_value(s, "flame_max_temp")]
+        flame_ignition_vals  = [_first_value(s, "flame_ignition")]
 
     for (use_d, slow_d, dissolve) in dissolve_states:
         for (use_n, nu, ns, nss) in noise_states:

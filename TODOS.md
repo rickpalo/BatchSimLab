@@ -30,7 +30,7 @@ Repo is source of truth — verify line refs against current code before acting.
 | TODO-57 | Declarative `PARAM_SPECS` registry (kills shotgun-surgery + positional `combo[N]`) | OPEN | — |
 | TODO-58 | Split 6.1k-line `__init__.py` into a package | OPEN | — |
 | TODO-59 | Decompose `_poll_batch_progress_impl` + finish `draw()` section helpers | OPEN (started — `_estimate_batch_remaining` extracted v0.9.4) | — |
-| TODO-60 | Cleanup — extract `_with_slow_companion`/`_first_value`; archive `rename_to_v0_7_1.py` | OPEN | — |
+| TODO-60 | Cleanup — extract `_with_slow_companion`/`_first_value`; archive `rename_to_v0_7_1.py` | PARTIAL (v0.9.4 — `_first_value` done) | — |
 | TODO-62 | Job Log header shows worker version (+ caution icon if ≠ expected) when jobs exist | OPEN | — |
 
 ---
@@ -369,16 +369,19 @@ pure, unit-tested `_estimate_batch_remaining` (TODO-46) — continue that style.
 
 ---
 
-## TODO-60: Cleanup — dedup helpers + archive one-off migrator — **OPEN**
+## TODO-60: Cleanup — dedup helpers + archive one-off migrator — **PARTIAL**
 
 **Filed 2026-06-21** (review Part 1 #4/#5; the dead `tools/smoke_launcher.py` half
-is already DONE, v0.9.3). Remaining:
-- Extract `_with_slow_companion(job)` — the slow-dissolve "flip companion" block is
-  repeated ~4× in `generate_jobs_limited` + once in `generate_jobs_all`.
-- Extract `_first_value(s, name)` — the `[expand_param(s, "X")[0]]` collapse-to-
-  first-value idiom appears ~12×.
-- Archive `tools/rename_to_v0_7_1.py` (one-time cache/render migrator) once no
-  pre-0.7.1 caches remain. **Severity:** low. **Effort:** small.
+is already DONE, v0.9.3).
+- **DONE (v0.9.4):** `_first_value(s, name)` extracted (beside `expand_param`) and
+  applied to the 34 `expand_param(s, "X")[0]` sites in `_default_job` + both job
+  generators. Behaviour identical — all 209 job-gen tests + full 618 pass. (The
+  emitter-side `expand_param(em, p)[0]` dict-comprehension uses a variable key, a
+  different idiom — left as-is.)
+- **REMAINING:** extract `_with_slow_companion(job)` — the slow-dissolve "flip
+  companion" block repeated ~4× in `generate_jobs_limited` + once in
+  `generate_jobs_all`; archive `tools/rename_to_v0_7_1.py` once no pre-0.7.1
+  caches remain. **Severity:** low. **Effort:** small.
 
 ---
 
