@@ -28,7 +28,7 @@ Repo is source of truth — verify line refs against current code before acting.
 | TODO-61 | Finish the BatchSimLab rename — remaining `SmokeSimLab`/`smoke_*` names | OPEN | — |
 | TODO-56 | Docs overhaul — README/DOCUMENTATION split, fix CSV/install/features/screenshot | MOSTLY DONE (v0.9.4) — hero screenshot recapture remains | — |
 | TODO-57 | Declarative `PARAM_SPECS` registry (kills shotgun-surgery + positional `combo[N]`) | OPEN | — |
-| TODO-58 | Split 6.1k-line `__init__.py` into a package | IN PROGRESS — modules #1 `jobgen` + #2 `emitters` + #3 `settings_io` + #4 `progress` + #5 `properties` + #6 `operators` + #6b `engine` (run/poll) extracted; `__init__` 6207→1429 ln; remaining: #7 `ui` (panel + UILists) | — |
+| TODO-58 | Split 6.1k-line `__init__.py` into a package | ✅ DONE (v0.9.8) — all 7 modules extracted (jobgen/emitters/settings_io/progress/properties/operators/engine/ui); `__init__` 6207→653 ln (registration + handlers + metadata + Preferences only) | — |
 | TODO-59 | Decompose `_poll_batch_progress_impl` + finish `draw()` section helpers | OPEN (started — `_estimate_batch_remaining` extracted v0.9.4) | — |
 | TODO-60 | Cleanup — extract `_with_slow_companion`/`_first_value`; archive `rename_to_v0_7_1.py` | PARTIAL (v0.9.4 — `_first_value` done) | — |
 | TODO-62 | Job Log header shows worker version (+ caution icon if ≠ expected) when jobs exist | OPEN | — |
@@ -343,7 +343,24 @@ Natural to pair with TODO-58. Add tests proving job-gen output is unchanged.
 
 ---
 
-## TODO-58: Split the 6.1k-line `__init__.py` into a package — **IN PROGRESS (modules #1–4 done, UNCOMMITTED)**
+## TODO-58: Split the 6.1k-line `__init__.py` into a package — **✅ DONE (v0.9.8)**
+
+**COMPLETE (2026-06-22, v0.9.8) — module #7 `ui.py` (the LAST) extracted.** Moved the
+N-panel `SMOKE_PT_panel`, the 3 UILists (`SMOKE_UL_value_list`/`_job_log`/`_velocity_list`),
+all `_*_ui` draw helpers, and the UI-only pure helpers (`noise_grid_edge`/
+`noise_grid_exceeds_ceiling`/`_NOISE_UPRES_EDGE_WARN`, `_VELOCITY_FORMAT_HINT`) into
+`scripts/BatchSimLab/ui.py` (849 ln). One-way leaf imports (jobgen/settings_io/operators/
+engine); `_job_log_rows`/`_job_statuses` imported from engine as the SAME in-place-mutated
+objects (verified by a test); `ADDON_VERSION` via a function-local deferred import in
+`draw()` (no ui→__init__ cycle). `SmokeSimLabPreferences` + load handlers + `register()`
+stayed. **`__init__.py` 6207→653 ln** (registration + handlers + metadata + Preferences
+only). New `tests/test_ui_module.py` locks the re-export contract + the deferred-ADDON_VERSION
+/ BUG-015 guard. Gate: **1128 pytest + REGISTER_OK/UNREGISTER_OK + headless draw() exercise**
+(drove the panel against real RNA across defaults / all-expanded / post-summary / in-progress
+states — the AST + REGISTER gates don't run draw bodies). The whole 7-module split is done;
+`__init__` is now registration-only. (Possible follow-up: TODO-61 Tier B filename renames.)
+
+---
 
 **Module #1 `jobgen.py` EXTRACTED (this session, no behaviour change):** the pure,
 `bpy`-free job-gen cluster moved to `scripts/BatchSimLab/jobgen.py` (779 ln) —

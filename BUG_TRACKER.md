@@ -1168,5 +1168,62 @@ ones).  Addon-only — worker/launcher unchanged, no re-export.
 
 ---
 
+## BUG-020: Job Log rows blank after in-place addon upgrade (rows present, not drawn)
+
+**Status:** `DOCUMENTED — DEFERRED` (root cause identified; fix not yet applied, per user request 2026-06-22)
+**Files:** `__init__.py` — `register()`, `_restore_job_log_on_load`, `_reset_on_load`; `SMOKE_UL_job_log.draw_item` (in-memory `_job_log_rows`)
+**Related:** [[BUG-001]] (same blank-row symptom, different trigger), [[BUG-015]] (other "blank after upgrade/reinstall" panel bug)
+
+### Symptoms
+After refreshing the remote extension repo and upgrading to v0.9.7 **while a
+.blend with a populated Job Log was already open**, the Job Log list still showed
+the correct number of rows (scrollbar thumb sized for many jobs, one row tinted)
+but **every row was blank** — no number, no name, no status icon.  A batch was
+running at the time (Progress bars updating normally).  Niche: requires upgrading
+the addon in place without reloading the .blend.  (Screenshot supplied 2026-06-22.)
+
+### Root cause (identified, not yet fixed)
+`draw_item` reads display text from the module-level `_job_log_rows` list, never
+from RNA (this is the BUG-001 fix — see that entry).  `_job_log_rows` is Python
+module state, NOT saved in the .blend.  Two `load_post` handlers keep it correct
+on **file load**:
+- `_reset_on_load` clears `_job_log_rows`, then
+- `_restore_job_log_on_load` rebuilds it from the persisted `job_log_items`
+  CollectionProperty.
+
+An **in-place addon upgrade re-runs `register()` but does NOT fire `load_post`**
+(no file is loaded — the .blend stays open).  `register()` ends with a direct
+`_reset_on_load()` call (which clears `_job_log_rows`) but **never calls
+`_restore_job_log_on_load()`**.  Result: `_job_log_rows` is empty while
+`job_log_items` is still full, so `draw_item`'s `if index >= len(_job_log_rows):
+return` guard fires for every row → all rows blank.  template_list still draws one
+row per `job_log_items` element (hence the correct count), but each is empty.
+
+Ironically `_restore_job_log_on_load`'s own docstring anticipates this ("If
+_job_log_rows is somehow empty while job_log_items is not — e.g. due to addon
+reload ordering"), but it's only wired as a `load_post` handler, so the upgrade
+path doesn't reach it.
+
+### Candidate fix (for later — DO NOT APPLY YET per user)
+Call `_restore_job_log_on_load()` at the end of `register()` (right after the
+existing `_reset_on_load()`), mirroring the load_post ordering — cheap and
+idempotent.  Belt-and-suspenders alternative: have `SMOKE_UL_job_log.draw_item`
+lazily rebuild `_job_log_rows` from `job_log_items` when it finds the list empty
+but the collection non-empty.  Workaround for the user today: reload the .blend
+(File → Revert, or reopen) — the `load_post` handler then repopulates the rows.
+
+### Tests (when fixed)
+A `register()`-path regression: seed `job_log_items` on a stub scene, clear
+`_job_log_rows`, call the rebuild, assert `_job_log_rows` matches the collection.
+The bpy-stubbed suite can't exercise `register()` against real RNA, so also
+re-verify in real Blender (REGISTER + a populated-file upgrade simulation).
+
+### Note (touches the in-flight TODO-58 #7 `ui.py` split)
+`SMOKE_UL_job_log` + `_job_log_rows` move into `ui.py`; `register()` /
+`_restore_job_log_on_load` stay in `__init__`.  Keep the candidate fix in mind so
+the register-path rebuild lands on the right side of the boundary.
+
+---
+
 *Document created 2026-05-11.  Append new attempts to existing issues rather than
 creating duplicate entries.*
