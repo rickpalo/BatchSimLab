@@ -58,26 +58,27 @@ class TestFormatEmitterOverlay:
     def test_empty(self):
         assert _fmt({}) == ("", "")
 
-    def test_single_goes_left(self):
-        left, right = _fmt({"A": _ep()})
-        assert left.startswith("A:")
+    def test_single_labelled_emitter_no_index(self):
+        # A lone emitter is "Emitter" (not "Emitter[0]", not the object name).
+        left, right = _fmt({"smokeGenerator_static": _ep()})
+        assert left.startswith("Emitter:")
+        assert "smokeGenerator_static" not in left
         assert right == ""
 
-    def test_two_split_left_right(self):
-        left, right = _fmt({"A": _ep(), "B": _ep()})
-        assert left.startswith("A:")     # even index → left
-        assert right.startswith("B:")    # odd index → right
-
-    def test_three_even_odd_split(self):
+    def test_multiple_stack_left_with_index(self):
+        # All emitters stack in the lower-left, labelled Emitter[i]; right empty.
         left, right = _fmt({"A": _ep(), "B": _ep(), "C": _ep()})
-        # sorted A,B,C → A(0) left, B(1) right, C(2) left
-        assert "A:" in left and "C:" in left
-        assert "B:" in right and "B:" not in left
+        lines = left.splitlines()
+        assert [l.split(":")[0] for l in lines] == ["Emitter[0]", "Emitter[1]", "Emitter[2]"]
+        assert right == ""
 
-    def test_sorted_by_name(self):
-        # Insertion order Zeta,Alpha — output must be name-sorted (Alpha first).
-        left, _ = _fmt({"Zeta": _ep(), "Alpha": _ep()})
-        assert left.startswith("Alpha:")
+    def test_emitter0_topmost_in_name_sorted_order(self):
+        # Insertion order Zeta,Alpha — Emitter[0] is the name-sorted first (Alpha),
+        # distinguishable by its temperature, and is the topmost line.
+        left, _ = _fmt({"Zeta": _ep(temperature=9.0), "Alpha": _ep(temperature=1.0)})
+        first = left.splitlines()[0]
+        assert first.startswith("Emitter[0]:")
+        assert "Temp-1" in first          # Alpha sorted first → index 0
 
 
 class TestPrepend:
@@ -96,7 +97,7 @@ class TestWorkerSource:
         return _WORKER_SRC.read_text(encoding="utf-8")
 
     def test_worker_version_bumped(self):
-        assert 'WORKER_VERSION = "0.9.1"' in self._src()
+        assert 'WORKER_VERSION = "0.9.2"' in self._src()
 
     def test_applies_emitter_block(self):
         src = self._src()
@@ -112,10 +113,12 @@ class TestWorkerSource:
         assert "use_initial_velocity" in src
         assert "velocity_coord" in src
 
-    def test_overlay_prepended_to_dissolve_and_time(self):
+    def test_overlay_prepended_to_dissolve_only(self):
+        # Emitters stack only in the Dissolve text now; Time text is bake-time only.
         src = self._src()
         assert '_set_text(text_map.get("dissolve", ""), _prepend(left_str' in src
-        assert '_set_text(text_map.get("time", ""), _prepend(right_str' in src
+        assert '_set_text(text_map.get("time", ""), time_str)' in src
+        assert '_prepend(right_str' not in src
 
     def test_emitter_apply_runs_before_maintain_density(self):
         # maintain_density (emitter_densities) must keep final say on density.

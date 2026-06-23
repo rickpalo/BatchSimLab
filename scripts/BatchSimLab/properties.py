@@ -458,12 +458,17 @@ class SmokeSettings(bpy.types.PropertyGroup):
     )
     sim_frame_start: bpy.props.IntProperty(
         name="Frame Start",
-        default=1, min=1,
+        # TODO-66: min was 1, which silently clamped negative scene frame
+        # ranges (Blender itself allows frame_start/frame_end down to
+        # MINFRAME) — both copying from the scene (_sync_frame_defaults) and
+        # typing a negative value directly were blocked. -1048574 matches
+        # Blender's own hard frame-number floor.
+        default=1, min=-1048574,
         description="First frame to bake and render",
     )
     sim_frame_end: bpy.props.IntProperty(
         name="Frame End",
-        default=250, min=1,
+        default=250, min=-1048574,
         description="Last frame to bake and render",
     )
 
@@ -986,6 +991,8 @@ class SmokeSettings(bpy.types.PropertyGroup):
     batch_render_width:      bpy.props.IntProperty(default=0)
     batch_render_height:     bpy.props.IntProperty(default=0)
     batch_render_mode:       bpy.props.StringProperty(default="CYCLES")
+    batch_use_noise:         bpy.props.BoolProperty(default=False)
+    batch_noise_upres:       bpy.props.IntProperty(default=0)
     batch_bake_secs_actual:  bpy.props.FloatProperty(default=-1.0)
     batch_bake_secs_actual:  bpy.props.FloatProperty(default=-1.0)
     batch_render_secs_actual: bpy.props.FloatProperty(default=-1.0)

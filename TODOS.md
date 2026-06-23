@@ -17,12 +17,12 @@ Repo is source of truth — verify line refs against current code before acting.
 
 | ID | Title | Status | Target |
 |----|-------|--------|--------|
-| TODO-51 | Better time estimates — samples + noise up-res terms | IN PROGRESS (step 1 done) | v0.8.0 |
+| TODO-51 | Better time estimates — samples + noise up-res terms | IN PROGRESS (bake noise-upres term done, v0.9.10) | v0.8.0 |
 | TODO-46 | "All jobs" ETA doesn't model two-pass bake-then-render | DONE (v0.9.4) — calibration deferred to TODO-51 | v0.8.0 |
 | TODO-36 | Monitor Existing Jobs — progress count wildly off mid-bake | OPEN | v0.8.0 |
 | TODO-31 | RESUME progress bar should start at "(already-baked + 1) of total" | OPEN (needs decision) | v0.8.0 |
-| TODO-27 | Restore crash dumps (relax Job Object kill window) | PARTIAL | — |
-| TODO-24 | Per-frame bake timing not collected | OPEN | — |
+| TODO-27 | Restore crash dumps (relax Job Object kill window) | PARTIAL — **option 4 DONE (v0.9.9, via TODO-63 Part A)**; revisit kill-window after first crash lands in a `.console.log` | — |
+| TODO-24 | Per-frame bake timing not collected | **PARSER DONE (v0.9.9)** — `analyze_estim.py --frames` parses `Fra:N … Time:` from captured `.console.log`; validate regex vs first real console log | — |
 | TODO-23 | Retry overall batch time estimate is unreliable | OPEN | — |
 | TODO-22 | Crash timing inconsistency (5-min stall vs immediate) | INSTRUMENTED (root cause open) | — |
 | TODO-61 | Finish the BatchSimLab rename — remaining `SmokeSimLab`/`smoke_*` names | OPEN | — |
@@ -32,6 +32,50 @@ Repo is source of truth — verify line refs against current code before acting.
 | TODO-59 | Decompose `_poll_batch_progress_impl` + finish `draw()` section helpers | OPEN (started — `_estimate_batch_remaining` extracted v0.9.4) | — |
 | TODO-60 | Cleanup — extract `_with_slow_companion`/`_first_value`; archive `rename_to_v0_7_1.py` | PARTIAL (v0.9.4 — `_first_value` done) | — |
 | TODO-62 | Job Log header shows worker version (+ caution icon if ≠ expected) when jobs exist | OPEN | — |
+| TODO-63 | Opt-in diagnostic capture: tee Blender console + periodic all-jobs ETA snapshots | ✅ **DONE (v0.9.9)** — Part A console capture + filter; Part B `batch_eta_tick` + analyzer trajectory view; folded in TODO-27 opt4 + TODO-24 parser | — |
+| TODO-65 | Render ETA ignores the **Render Animation** checkbox (still-only over-estimated) | OPEN (filed 2026-06-22) | — |
+| TODO-66 | Custom Frame Range rejects a negative Frame Start | ✅ **DONE (v0.9.10)** — `sim_frame_start`/`sim_frame_end` `min` was 1, silently clamping negative values (typed directly or copied from a scene with a negative `frame_start`) | — |
+
+---
+
+## TODO-65: Render ETA ignores the "Render Animation" checkbox — **OPEN**
+
+**Filed 2026-06-22** (user question). When **Render Animation** is OFF the worker
+renders a **single still** — the last frame (`smoke_worker.py` ~L1209/L1307:
+`scene.frame_set(frame_end)`), no PNG sequence / MP4. But the poll engine's render
+estimate always assumes a full animation render:
+`default_render_secs = render_rate × render_px × frame_end` (`engine.py` ~L874),
+plus a separate `_STILL_SECS_DEFAULT`. So a still-only job is **over-estimated by
+~N×** (N = frame count). The poll engine has no `batch_render_animation` snapshot to
+even see the setting at estimate time.
+
+**Fix sketch:** (1) snapshot `render_animation` into a `batch_*` field at Run Batch
+(beside `batch_render_mode`/`batch_resolution`/`batch_render_width/height`), the same
+way other run-time settings are captured; (2) in the `default_render_secs` computation,
+when render-animation is off use a single-frame render cost (≈ `render_rate × render_px`
+or just `_STILL_SECS_DEFAULT`) instead of `× frame_end`, and don't double-count the
+still. (3) regression test on the estimate math for both checkbox states. Related to
+TODO-23 (retry ETA) / TODO-51 (calibration) — fold the test into the estimate-accuracy
+work. Low effort, medium value (the still-only path is common for quick look-dev sweeps).
+
+---
+
+## TODO-66: Custom Frame Range rejects a negative Frame Start — **DONE (v0.9.10)**
+
+**Filed + fixed 2026-06-23** (user report). `sim_frame_start` / `sim_frame_end`
+(`properties.py`) were declared with `min=1`, which silently clamps any value
+below 1 — both a value typed directly in the panel and a negative
+`context.scene.frame_start` copied in by `_sync_frame_defaults` when the user
+unchecks **Use Default Frames**. Blender itself allows frame numbers down to
+its `MINFRAME` (-1048574), e.g. for pre-roll; the addon's custom range
+couldn't follow. `generate_jobs`/`smoke_worker.py` already use `frame_start`
+as a plain variable in `range(frame_start, frame_end + 1)` and
+`frame_end - frame_start + 1` — both correct for negative values — so the
+fix is purely the two `min` bounds. **Fix:** `min=-1048574` on both
+properties (matching Blender's own hard floor). Tests:
+`test_frame_start_end_allow_negative_values` (property declaration) +
+extended `test_sync_frame_defaults_copies_scene_range` (negative scene
+frame_start copies through unclamped) in `test_properties_module.py`.
 
 ---
 
@@ -70,12 +114,25 @@ all imports/paths/URLs updated, feed moved to
 
 ---
 
-## TODO-51: Better time-estimate formulas — add samples + noise up-res terms — **IN PROGRESS** (step 1 done, v0.7.3)
+## TODO-51: Better time-estimate formulas — add samples + noise up-res terms — **IN PROGRESS** (bake noise-upres term done, v0.9.10)
 
 **Step 1 (data collection) DONE in v0.7.3:** the worker `_perf` record now logs
-`render_samples`, `use_noise`, and `noise_upres` (worker → 0.7.1).  **Next:** run
-a calibration batch that *varies samples and noise_upres at a fixed resolution*
-(see calibration note below), then do steps 2-3 (analysis + model).
+`render_samples`, `use_noise`, and `noise_upres` (worker → 0.7.1).
+
+**Bake noise term DONE in v0.9.10**, using the 2026-06-22 AutoTest GPU sweep (24
+jobs, res 64/128/256 × noise_upres 0/1/2, EEVEE @ 8 samples) as the first real
+calibration data — not the dedicated multi-axis batch the design below calls
+for, but enough to confirm and fit the noise-upres term for bake. Added
+`engine._bake_noise_multiplier(use_noise, noise_upres)` (lookup table `{0: 1.0,
+1: 2.3, 2: 3.8}`, fit from `analyze_estim.py`'s BAKE table actual/default
+ratios with res=64 excluded as a known low-res-overhead outlier; upres 3+ falls
+back to the upres-2 bucket since it's unmeasured) and threaded `batch_use_noise`
+/ `batch_noise_upres` snapshot properties through engine.py's per-job state
+(mirroring the existing `batch_resolution` pattern) so the poll loop's
+`default_bake_secs` can apply it. **Still open:** the render (EEVEE) side —
+samples term + noise-upres term — and Cycles entirely; the dedicated
+multi-axis calibration batch below has not been run (this sweep varied
+resolution × noise_upres only, not render_samples).
 
 **Two observations from the 2026-06-15 batch:**
 1. **Render time rises with noise up-res even at the same output resolution** —
@@ -195,6 +252,20 @@ initial state seeding.
 **Files:** `__init__.py` — `_count_vdb_frames`, the bake-bar progress section in
 `_poll_batch_progress_impl`, `SMOKE_OT_monitor_existing_jobs.execute`.
 
+**Additional data point — RENDER bar, same root cause family (2026-06-22):** During
+a Retry + Monitor Existing Jobs session, Bar 1 read `Rendering (37 of 297)` while
+the worker was visibly saving `frame_0487` of a 297-frame re-render. The render
+subtask (`engine.py` ~L791-811) counts PNGs with `mtime >= _bt("job_start_time")`;
+under Monitor, `job_start_time` is seeded at **monitor-click**, not at the job's
+real render start. So the numerator counts **frames-rendered-since-monitoring-began**
+(live debug_log: `render poll (mtime): raw=49 new=49 target=297`, climbing slowly)
+while the denominator is the **whole-job** target (297) — mismatched baselines →
+a misleadingly low "X of 297". Confirms the Monitor-seeding defect spans BOTH the
+bake bar (original report) and the render bar. Fix should seed bake/render baselines
+(or `job_start_time`) from the job's true phase-start when adopting a mid-flight job,
+or count against a since-monitor denominator so numerator and denominator agree.
+Now also note `engine.py` (post-split), `_count_png_frames`, `batch_render_frame_baseline`.
+
 ---
 
 ## TODO-31: RESUME progress bar should start at "(already-baked + 1) of total" — **OPEN (needs decision)**
@@ -240,6 +311,11 @@ Blender before the SEH handler runs — we'd need deeper changes:
 Option 3 is least invasive. Re-evaluate after the next production batch shows
 whether dumps start landing again.
 
+**UPDATE 2026-06-22 — option 4 BATCHED INTO TODO-63 Part A.** "Capture stderr/stdout
+to a file" is exactly TODO-63's per-job `job_NNNN.console.log` (full Blender console,
+crash-survivable `.bat` redirect). Implement there; afterward re-check whether crash
+output/dumps now land on disk, then revisit options 1-3 if still missing.
+
 **Files:** `smoke_launcher.py` — `_create_crash_suppression_job`,
 `_save_crash_log`, post-exit polling. **Related:** `project_crash_root_cause` —
 the actual crashes are in Blender 5.1.1's glTF/numpy import, not our code; better
@@ -261,6 +337,11 @@ a `frame_change_post` handler or a monitor thread in the worker.
 before `bake_all()` that timestamps each frame advance; write per-frame data to
 `perf_log.json` on completion.  **Files:** `smoke_worker.py` — bake section;
 `perf_log.json` schema.  Ties to TODO-51.
+
+**UPDATE 2026-06-22 — BATCH WITH TODO-63.** Likely cheaper than a `frame_change_post`
+monitor: TODO-63 Part A captures Blender's console to `job_NNNN.console.log`, which
+already contains timestamped per-frame lines (Cycles `Fra:N … | Time:`, Mantaflow bake
+frames). Parse those into per-frame timing instead. Do it in the TODO-63 batch.
 
 ---
 
@@ -735,3 +816,157 @@ exported worker version ≠ `_EXPECTED_WORKER_VERSION`, show a caution icon (`ER
 read once per poll/transition, not every draw (draw must stay cheap — see BUG-015).
 Consider also showing the launcher version. **Severity:** low (clarity/diagnostic).
 **Effort:** small.
+
+---
+
+## TODO-63: Opt-in diagnostic capture — tee Blender's console + periodic all-jobs ETA snapshots — ✅ **DONE (v0.9.9)**
+
+> **Implemented 2026-06-22.** Both parts landed; design notes below kept for reference
+> until the next sweep validates them. **Re-export required** (launcher bumped 0.6.4→0.6.5;
+> addon 0.9.8→0.9.9; worker unchanged 0.9.1).
+>
+> **Part A (gate `collect_debug_log`):** `operators._job_run_cmd` now appends a per-job/-phase
+> redirect `> "job_NNNN[.<phase>].console.log" 2>&1` to the whole job command (launcher AND
+> direct-Blender forms) instead of `2>nul`/pass-through; same for the `engine.py` retry path
+> (`<retry_stem>.console.log`). New `operators._console_log_path` owns the naming convention,
+> mirrored by `smoke_launcher._console_log_path_for`. After Blender exits the launcher tails
+> that file for `ERROR`/`WARNING`/`Traceback` lines into `debug_log.txt` (+ a pointer), keeping
+> the raw firehose out of the shared log (`_filter_console_to_debug_log`). **Folds in TODO-27
+> opt 4** (crash stdout now lands on disk) and gives **TODO-24** its data source.
+> Trade-off: with the flag on, the live cmd window shows only the per-job `echo` headers (the
+> firehose goes to the file) — acceptable for an opt-in diagnostic.
+>
+> **Part B (gate `collect_estimation_data`):** `engine._log_eta_tick` writes a throttled
+> (`_ETA_TICK_MIN_SECS = 300`) `batch_eta_tick` to `estim_log.jsonl` from the poll's all-jobs
+> block — `elapsed`, `jobs_done`/`total`, `phase`, `remaining_secs` (Bar-3 ETA), `job_remaining_secs`
+> (Bar-2). Initial tick forced on the first active-job poll; final tick forced at `batch_complete`
+> (remaining=0) so the trajectory ends on the true wall-clock. `analyze_estim.py` gained an
+> **ALL-JOBS ETA TRAJECTORY** section (per-batch predicted-total vs actual, converged/diverged
+> verdict) and a `--frames <jobs_dir>` mode (**TODO-24**) parsing `Fra:N … Time:` per-frame timing.
+>
+> **Tests:** `test_operators_module.py::TestConsoleLogRedirect`, `test_engine_module.py`
+> (`TestEtaTickThrottle` + retry-redirect source check), `test_smoke_launcher.py::TestConsoleLogFilter`,
+> `test_todo63_analyzer.py` (frame-time parse + batch split). **1146 pytest + AST guard green.**
+>
+> **⏳ Validation pending (next sweep):** (1) confirm a headless `collect_debug_log` job produces a
+> non-empty `.console.log` and surfaces an `ERROR` into `debug_log.txt`; (2) validate the
+> `_FRA_TIME_RE` regex against the first real Cycles console log (format shifts between releases);
+> (3) confirm `batch_eta_tick` series converges. Part B must be exported BEFORE the *next* long
+> sweep so it logs ticks to validate the TODO-51 refit. Real-Blender REGISTER_OK/UNREGISTER_OK +
+> headless draw exercise still owed (deferred while the AutoTest GPU sweep is running).
+
+### (original design — retained for reference)
+
+**Filed 2026-06-22** (user request, from the "console errors land nowhere on disk"
+investigation). Two opt-in diagnostic streams. They are bundled (both are "capture a
+diagnostic time-series only when the user opts in"), but note they have **different
+gates and different destinations** — don't conflate them:
+
+### Part A — capture Blender's native console (gate: `collect_debug_log`)
+
+**Why:** Blender/Cycles/Mantaflow print at the **C level**, straight to the cmd
+window — none of it reaches the job `.log` or `debug_log.txt` (verified 2026-06-22:
+the worker has no `dup2`/`freopen`/stdout redirect; `.bat` sends stderr to `nul`).
+So `cycles | ERROR Image file … does not exist`, per-frame `Saved:` lines, Python
+tracebacks, and **startup crash output all vanish when the window closes.** This is
+the missing-evidence gap behind the crash investigations.
+
+**Design (tiered — keep job logs curated, per user):**
+- **Job logs:** unchanged — curated worker `_log()` lines only. Native console does
+  NOT go here (not vital).
+- **Full raw stdout+stderr → per-job `job_NNNN.console.log`** when `collect_debug_log`
+  is on. Simplest + crash-survivable route: launcher `.bat` redirect
+  (`> job_NNNN.console.log 2>&1` instead of `2>nul`); alternative is `os.dup2` of
+  fd 1/2 in the worker (a Python `sys.stdout=` reassignment will NOT catch the C-level
+  prints). The `.bat` route also survives a hard crash, which is the case we most want.
+- **`debug_log.txt` gets the FILTERED high-signal subset** — `ERROR`/`WARNING`/
+  traceback lines + a one-line pointer to the console file. Keeps the ~2.8k structured
+  `[poller]` lines readable; avoids ballooning the shared file with per-frame firehose
+  (a 500-frame Cycles render = tens of thousands of lines).
+
+**Tie-ins:**
+- **TODO-22 / TODO-27 / `project_crash_root_cause`:** the per-job console file would
+  finally capture the glTF/numpy startup-crash signature we've never had on disk.
+- **TODO-24 / TODO-51:** Cycles/Mantaflow `Fra:N` lines are timestamped → a free source
+  of **per-frame bake/render timing** for calibration (parse from the console file).
+- Context that prompted this: the benign stale-image-reference errors (orphan Image
+  datablocks in `SmokeSimulatorForPiazzoSanMarco.blend` pointing at
+  `D:\SmokeTestingTemp\…`) — non-fatal, render proceeds, but logged nowhere.
+
+**Caveat:** the `.console.log` files can get large; only written when the debug flag
+is on. Consider a size cap / keep-last-N-MB tail.
+
+### Part B — periodic all-jobs ETA snapshots (gate: `collect_estimation_data`)
+
+**Why (user):** spot-check the **"All jobs: XX hrs remaining"** estimate after a sweep —
+confirm the initial estimate is in the ballpark, that it *updates*, and that it
+*converges* toward the actual total wall-clock over time. **Currently NOT collected:**
+`estim_log.jsonl` only has per-transition events (`batch_start` / `job_start` /
+`bake_actual` / `job_complete` / …); the live all-jobs remaining figure is computed
+each poll by `_estimate_batch_remaining` (`engine.py`) and displayed but **never
+persisted** (verified: 0 hits in `debug_log.txt`, no periodic event in `estim_log`).
+
+**Design:**
+- Add a new `estim_log.jsonl` event (e.g. `event="batch_eta_tick"`) via the existing
+  `_estim_log(record)` writer (already gated by `collect_estimation_data`).
+- The poller fires every ~5 s — **throttle to one snapshot every 5–10 min** via a
+  last-snapshot timestamp in `_estim`/`_poll_state` (don't log every poll).
+- Capture per tick: `ts`, batch `elapsed`, `jobs_done`/`total`, current phase
+  (bake/render), the **all-jobs remaining seconds** (the displayed Bar-3 ETA), and
+  the current-job remaining (Bar-2) for context. Enough that
+  `tools/analyze_estim.py` can plot ETA-vs-elapsed and overlay the true final wall
+  time → shows ballpark accuracy + convergence.
+- Always log a tick at `batch_start` (the initial estimate) and at `batch_complete`
+  (so the final actual is on the same axis).
+
+**Extend `tools/analyze_estim.py`** with an ETA-trajectory view (estimate over time vs
+actual total) for the spot-check.
+
+**Severity:** medium (diagnostics; Part B directly supports validating TODO-46/TODO-51
+estimate work). **Effort:** Part A medium (launcher redirect + worker filter), Part B
+small (one throttled `_estim_log` call + analyzer view).
+
+### ▶ Work batched with TODO-63 (do together — shared mechanism/files)
+
+- **TODO-27 (crash stderr capture) — FOLD IN.** Part A *is* TODO-27's "option 4"
+  (capture stderr/stdout so crash output lands on disk). Implement once; when Part A
+  lands, mark TODO-27's option 4 done and re-check whether crash dumps now appear.
+- **TODO-24 (per-frame bake/render timing) — FOLD IN.** Falls out of Part A almost for
+  free: the captured console has timestamped `Fra:N … | Time:` (Cycles) and Mantaflow
+  bake-frame lines. Parse them from `job_NNNN.console.log` into per-frame timing instead
+  of building a separate `frame_change_post` monitor. Same worker/console plumbing.
+- **TODO-51 (estimate calibration) — SEQUENCE AFTER THE SWEEP, share the analyzer.**
+  Part B's `tools/analyze_estim.py` ETA-trajectory view edits the same file TODO-51
+  step 2 extends; do the analyzer changes in one pass. TODO-51's model refit is gated on
+  the sweep's `estim_log.jsonl`/`perf_log.json` (in flight). Part B should land BEFORE
+  the next long sweep so the *follow-on* batches log ETA ticks to validate the refit.
+- **Optional / opportunistic — BUG-022 (+ BUG-021 shared status helper).** Part B inserts
+  into `_poll_batch_progress_impl` (engine.py), the SAME function whose phase-count block
+  is wrong during retry+monitor (BUG-022). If touching that function anyway, consider the
+  batch-scoped/retry-aware counter fix + the shared "final status of job N" helper that
+  also fixes BUG-021. Keep optional — different concern; don't let it balloon the batch.
+
+### Implementation anchors (verified 2026-06-22 — re-grep, lines shift)
+
+- **Part A launcher redirect — TWO sites** (both end the blender cmd with `2>nul`):
+  1. Normal export: `operators.py` `_job_run_cmd()` (~L135-164) — `--window-geometry`
+     (EEVEE) and `--background` (Cycles/bake) variants, cmd ends `…-- "{job_path}"{_phase_suffix} 2>nul` (L164).
+  2. Retry path: `engine.py` (~L1280-1292) — same two variants, ends `'{blender_cmd} 2>nul'` (L1292).
+  Change: when `collect_debug_log` is on, replace `2>nul` with
+  `> "{jobs_dir}\job_NNNN.console.log" 2>&1` (per-job, full firehose). Both sites or a
+  shared helper. NOTE the worker (`smoke_worker.py`) has NO fd redirect today
+  (no `dup2`/`freopen`); the `.bat` route is preferred (crash-survivable, catches C-level).
+- **Part A filter → debug_log:** after a job ends, tail/scan its `.console.log` for
+  `ERROR`/`WARNING`/`Traceback`, and `_dlog`/`_debug_log` those lines + a pointer.
+- **Part B ETA snapshot:** `engine.py` `_poll_batch_progress_impl`, the "All jobs:" block
+  where `_estimate_batch_remaining(...)` is called (~L998-1004). Add a throttled
+  `_estim_log({"event":"batch_eta_tick", ...})` — store `last_eta_tick_ts` in `_poll_state`
+  (poller fires ~5 s; gate to ≥ 300–600 s). Also emit a tick at `batch_start` and at the
+  completion path (~L462-495). `_estim_log` (engine.py L312) already gates on
+  `collect_estimation_data` + output path. Add `test_engine_module.py` throttle test.
+
+### Tests / gate
+Per-module + AST unbound-name guard + REGISTER_OK/UNREGISTER_OK as always. Part A: a
+headless job with `collect_debug_log` on must produce a non-empty `job_NNNN.console.log`
+and surface an `ERROR` line into `debug_log.txt`. Part B: unit-test the throttle (no tick
+< interval; tick ≥ interval) and that `batch_eta_tick` records carry the remaining-secs.

@@ -15,7 +15,7 @@ Applies fluid parameters, bakes, renders playblast MP4 + final still PNG,
 appends a row to Renders/results.csv, then quits Blender.
 """
 
-WORKER_VERSION = "0.9.1"
+WORKER_VERSION = "0.9.2"
 
 import bpy
 import sys
@@ -149,13 +149,15 @@ def _set_text(obj_name, value_str):
         _log(f"  WARNING: '{obj_name}' not found or not a FONT object")
 
 
-def _emitter_overlay_line(ename, ep):
+def _emitter_overlay_line(label, ep):
     """Format one emitter's settings as a single overlay line, e.g.
-    "Emitter1: Init Temp-1, Dens-1, SurfE-1.5, VolE-0".  When initial velocity
-    is on, the Source/Normal/Initial-XYZ values are appended."""
+    "Emitter: Init Temp-1, Dens-1, SurfE-1.5, VolE-0".  `label` is the generic
+    display label ("Emitter" or "Emitter[0]"), NOT the (long) flow-object name.
+    When initial velocity is on, the Source/Normal/Initial-XYZ values are
+    appended."""
     def g(k, d=0.0):
         return f"{round(float(ep.get(k, d)), 3):g}"
-    line = (f"{ename}: Init Temp-{g('temperature', 1.0)}, Dens-{g('density', 1.0)}, "
+    line = (f"{label}: Init Temp-{g('temperature', 1.0)}, Dens-{g('density', 1.0)}, "
             f"SurfE-{g('surface_distance', 1.5)}, VolE-{g('volume_density', 0.0)}")
     if ep.get("use_initial_velocity"):
         vc = ep.get("velocity_coord", [0.0, 0.0, 0.0]) or [0.0, 0.0, 0.0]
@@ -166,17 +168,25 @@ def _emitter_overlay_line(ename, ep):
 
 
 def _format_emitter_overlay(emitters):
-    """Return (left_text, right_text): one line per emitter, split across the
-    two existing corner FONT objects — even-indexed emitters (sorted by name,
-    matching make_name's E0/E1 order) go lower-left, odd-indexed lower-right.
-    Empty dict → ("", "")."""
+    """Return (left_text, right_text): ALL emitters stacked in the lower-left
+    (Dissolve) text, one line each, Emitter[0] topmost.
+
+    The label is generic — a lone emitter is "Emitter"; multiple are
+    "Emitter[0]"/"Emitter[1]"/… in name-sorted order (the same order make_name
+    assigns its E0/E1 tokens) — so the long flow-object name no longer eats the
+    overlay width.  `right_text` is always "" now (emitters previously spilled
+    into the lower-right Time text); it is kept in the tuple for the caller's
+    unpacking.  Empty dict → ("", "")."""
     if not emitters:
         return "", ""
-    left, right = [], []
-    for i, ename in enumerate(sorted(emitters)):
-        line = _emitter_overlay_line(ename, emitters[ename])
-        (left if i % 2 == 0 else right).append(line)
-    return "\n".join(left), "\n".join(right)
+    names  = sorted(emitters)
+    single = len(names) == 1
+    lines  = [
+        _emitter_overlay_line("Emitter" if single else f"Emitter[{i}]",
+                              emitters[ename])
+        for i, ename in enumerate(names)
+    ]
+    return "\n".join(lines), ""
 
 
 def _prepend(extra, base):
@@ -219,10 +229,12 @@ def update_text_objects(text_map, params, bake_seconds=None):
     _set_text(text_map.get("noise", ""), noise_str)
 
     # v0.9.0 TODO-55: per-emitter settings overlay.  Rather than new FONT
-    # objects, the emitter lines are PREPENDED to the existing corner text:
-    # lower-left = the Dissolve text object, lower-right = the Time text object.
-    # Even-indexed emitters → left, odd-indexed → right (sorted by name).
-    left_str, right_str = _format_emitter_overlay(params.get("emitters", {}))
+    # objects, the emitter lines are PREPENDED to the existing lower-left
+    # Dissolve text object — ALL emitters stack there (Emitter[0] topmost),
+    # labelled generically ("Emitter" / "Emitter[i]") so the long flow-object
+    # name doesn't eat the overlay width.  (The Time text no longer carries
+    # emitter lines.)
+    left_str, _ = _format_emitter_overlay(params.get("emitters", {}))
 
     # Dissolve — combined string or "Dissolve-None" (emitter lines prepended).
     if params["use_dissolve"]:
@@ -235,7 +247,8 @@ def update_text_objects(text_map, params, bake_seconds=None):
         dissolve_str = "Dissolve-None"
     _set_text(text_map.get("dissolve", ""), _prepend(left_str, dissolve_str))
 
-    # Bake time — only written after bake completes (emitter lines prepended).
+    # Bake time — only written after bake completes (no emitter lines here now;
+    # all emitters stack in the Dissolve text above).
     if bake_seconds is not None:
         hrs  = int(bake_seconds // 3600)
         mins = int((bake_seconds % 3600) // 60)
@@ -246,7 +259,7 @@ def update_text_objects(text_map, params, bake_seconds=None):
             time_str = f"Bake: {mins} min {secs} sec"
         else:
             time_str = f"Bake: {secs} sec"
-        _set_text(text_map.get("time", ""), _prepend(right_str, time_str))
+        _set_text(text_map.get("time", ""), time_str)
 
 
 # ---------------------------------------------------------------------------

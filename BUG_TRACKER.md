@@ -1274,5 +1274,119 @@ render-done-without-unphased-done (must SKIP) and bake-only completion.
 
 ---
 
+## BUG-022: Bar 3 "Bake N / Render N" counts are wrong during a Retry + Monitor session (counts stale prior-batch phased markers; blind to retry/both-mode jobs)
+
+**Status:** `ROOT CAUSE CONFIRMED — NOT YET FIXED` (live AutoTest evidence captured 2026-06-22; niche: retry + Monitor Existing Jobs + leftover markers from a prior batch in the same output dir)
+**Files:** `engine.py` — `_poll_batch_progress_impl` phase-count block (~L497-539), `_BAKE_DONE_RE` / `_RENDER_DONE_RE` (L74-75)
+**Related:** same marker-counting confusion family as BUG-021 (phased vs unphased vs `_retry` naming). Distinct defect: BUG-021 is retry-detection-vs-Job-Log; this is the overall-progress Bar-3 counters.
+
+### Symptom / how it was spotted
+After last night's failed jobs, the user upgraded the add-on, clicked **Retry Failed
+Jobs** (24 jobs queued) and **Monitor Existing Jobs**. Screenshot showed Bar 3:
+`Bake 11/24  Render 0/24  (3/24 done, 1 failed)` — i.e. **0 rendered**, yet the same
+bar said **3 done** and the Job Log showed completed (rendered) jobs (✓). "0 rendered"
+also seemed to contradict that rendering was visibly in progress (command window saving
+`frame_0487`).
+
+### Root cause (confirmed with live data)
+Two independent counting methods feed one line, and they disagree:
+
+1. **Bake/Render counts** = `_count_phase_success(_BAKE_DONE_RE / _RENDER_DONE_RE)`
+   where the regexes are `^job_\d{4}\.bake\.done$` / `^job_\d{4}\.render\.done$`.
+   - **Not `_retry`-aware:** they don't match `job_NNNN_retry.*`.
+   - **Phased-only:** the **retry batch runs `--phase both`** (`run_retry_failed.bat`
+     has NO `--phase`; verified) so retry jobs write only the **unphased** `_retry.done`
+     — never `.bake.done` / `.render.done`. So retry jobs contribute **0** to both.
+   - With nothing current to count, the regexes latch onto **stale leftover markers
+     from last night's first-run batch** in the same `jobs/` dir: 11 `job_NNNN.bake.done`
+     (clean → counted = **11**) and 15 `job_NNNN.render.done` (**all contain "error"**
+     from the crashed renders → `_count_phase_success` excludes every one → **0**).
+     → exactly `Bake 11/24  Render 0/24`. Both numbers describe last night, not the
+     running retry batch, and are compared against the retry `total` (24).
+2. **"(3/24 done, 1 failed)"** = the retry-aware done counter (`_DONE_RE` / `_RETRY_DONE_RE`),
+   which *does* count the current `_retry.done` markers → correct (3 done, 1 failed).
+
+So the contradiction is real: stale, non-retry-aware phase counts (1) sitting next to a
+correct retry-aware done count (2).
+
+**Issue C clarification ("rendering shouldn't start before bake is complete"):** not an
+ordering bug. Within each `--phase both` job the worker bakes then renders in one
+process, so order is preserved. `Render 0/24` is purely the broken counter above — the
+renders that completed were never counted.
+
+### Live evidence (2026-06-22, AutoTest)
+- `run_retry_failed.bat`: zero `--phase` tokens (→ "both"); `run_smoke_batch.bat`: 24×
+  `--phase bake` + 24× `--phase render` (normal batch is two-pass, retry is not).
+- `jobs/`: retry markers `*_retry.done`=10, `*_retry.bake.done`=0, `*_retry.render.done`=0.
+  Leftover non-retry: `.bake.done`=11 (clean), `.render.done`=15 (every one greps "error").
+
+### Candidate fix (not applied)
+- Make the phase counters **batch-scoped and retry-aware**: count only markers whose
+  stem is in the *current* batch's job set (seed the stem list at run/monitor start),
+  matching either `job_NNNN` or `job_NNNN_retry`. This kills the stale-leftover bleed.
+- Handle **both-mode** batches: when jobs run `--phase both` (no phased markers exist),
+  derive bake/render progress from the unphased `.done` (a completed both-job = baked AND
+  rendered) and the single running job's live phase, instead of phased-marker tallies.
+  Simplest: if the batch has no phased markers, collapse Bar 3 to the done/failed/total
+  summary (drop the misleading "Bake x / Render y").
+- Best: one shared "per-job phase status" helper feeding Bar 3, the Job Log, and retry
+  detection (see BUG-021) so the three can't drift. Add `test_engine_module.py` cases:
+  a both-mode batch with leftover prior-batch phased markers must report `Bake 0 / Render 0`
+  (or the collapsed form), not the stale counts.
+- **Cheap mitigation meanwhile:** clear/relocate the prior batch's `jobs/` markers before
+  a retry, so at least the stale leftovers can't be miscounted.
+
+---
+
+## BUG-023: Noise-bake ceiling (512³) is a hard wall on weaker hardware, not just "flaky" (second-machine evidence)
+
+**Status:** `CONFIRMED — not a code bug, threshold is hardware-dependent; awareness + docs update only`
+**Files:** `ui.py` — `_NOISE_UPRES_EDGE_WARN` / `noise_grid_edge` / `noise_grid_exceeds_ceiling` (~L45-75)
+**Related:** [[project_noise_bake_ceiling]]; same job-crash family as the existing root-cause writeup
+(`project_crash_root_cause` — glTF/numpy startup race) but a **different, additional** cause confirmed here.
+
+### Symptom
+Logs collected from a second machine (`tmpDataTransfer/{blender_stderr,crash_log,debug_log,
+estim_log}.*`, addon 0.9.6/launcher 0.6.4) show **job_0000** (`R256_..._N2_...`, i.e.
+resolution=256 × noise_upres=2 → 512³ effective grid, frame_end=1600, CYCLES) crashing on
+**every single attempt** — 12+ separate launches spanning 2026-06-21 23:17 → 2026-06-23
+06:26 (~31 hours), manually restarted each time. `grep -c "exit: bake_seconds"` for this job's
+name across the entire `debug_log.txt` is **0** — it has never once reached the worker's exit
+line, let alone completed.
+
+### Root cause
+`_NOISE_UPRES_EDGE_WARN = 512` was calibrated on the primary dev machine (128 GB RAM, i9-13900),
+where [[project_noise_bake_ceiling]] explicitly records **256×2 = 512³ → OK** (RAM stayed ~40 GB
+there — the theorized mechanism is Mantaflow's 32-bit grid-index overflow near 1024³, not OOM)
+and every config "eventually completed after re-export and restart" — i.e. advisory-only by
+design, because on that hardware 512³ wasn't a hard wall. This second machine's specs are
+unknown, but the **identical** 512³ config that's "fine" on the dev box is a **100% reproducible
+failure** here across 12+ attempts. Since the dev-machine evidence argues against simple memory
+exhaustion (only ~40 GB used at much larger 768³/1024³ grids), the exact reason the threshold
+shifts on this machine is **unconfirmed** — could be RAM/VRAM, GPU vs. CPU compute path, or
+hardware-sensitivity in the same indexing bug. The crash signatures vary run-to-run
+(`EXCEPTION_ACCESS_VIOLATION` in `tbbmalloc.dll`/`blender.exe`, one `EXCEPTION_INT_DIVIDE_BY_ZERO`),
+consistent with a resource/indexing fault rather than one specific deterministic line of code.
+Other crashes in the same logs (scattered across many other job names/dates back to 2026-05-07,
+recurring identical addresses in `python313.dll`) are the already-documented glTF/numpy startup
+race — unrelated, not actionable, no new dump captured per the known Job-Object kill-window gap
+(TODO-27).
+
+### Why no code fix (yet)
+The threshold is a single global constant; there's no portable way to know the *other* machine's
+hardware from inside the addon to scale it automatically, and the dev-machine data above shows
+the obvious guess (RAM) doesn't explain it. Lowering it globally would produce false-positive
+warnings on capable hardware like the dev box where 512³ is fine. The check is also
+advisory-only (`noise_grid_exceeds_ceiling`), so even a correct warning wouldn't have stopped a
+headless/batch launch from attempting (and re-attempting) this job.
+
+### Recommendation
+On the weaker machine, avoid `noise_upres=2` at resolution=256 (drop to `noise_upres=1`, i.e.
+256³, or lower resolution) until it's confirmed to complete reliably there. No immediate code
+change; revisit if more machines report the same 512³ failure (would justify lowering the global
+default) or if a per-machine-configurable threshold becomes worth the complexity.
+
+---
+
 *Document created 2026-05-11.  Append new attempts to existing issues rather than
 creating duplicate entries.*

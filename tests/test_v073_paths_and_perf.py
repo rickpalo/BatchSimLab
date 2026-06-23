@@ -59,10 +59,11 @@ class TestWorkerVersionBump:
         assert (major, minor, patch) >= (0, 7, 1)
 
     def test_addon_expects_matching_worker(self):
-        # The version gate compares the exported worker against this constant;
-        # bumped to 0.9.1 by BUG-016 (setup_eevee applies per-job render_samples
-        # via taa_render_samples).
-        assert ssl._EXPECTED_WORKER_VERSION == "0.9.1"
+        # The version gate compares the exported worker against this constant.
+        # 0.9.1 = BUG-016 (per-job render_samples via taa_render_samples);
+        # 0.9.2 = generic "Emitter"/"Emitter[i]" overlay labels stacked in the
+        # Dissolve text (item-4 overlay change).
+        assert ssl._EXPECTED_WORKER_VERSION == "0.9.2"
 
 
 class TestPerfRecordEstimationFields:

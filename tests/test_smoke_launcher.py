@@ -11,6 +11,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts", "Bat
 from smoke_launcher import (
     _find_werfault_for_pid, _save_crash_log, _write_crashed_marker,
     _STARTUP_TIMEOUT, _STALE_LOG_TIMEOUT, _WALL_CLOCK_TIMEOUT,
+    _console_log_path_for, _filter_console_to_debug_log,
 )
 
 
@@ -675,3 +676,57 @@ class TestLauncherPhase:
 
     def test_passes_phase_to_worker(self):
         assert '_phase_args = [] if phase == "both" else ["--phase", phase]' in self._src()
+
+
+# ---------------------------------------------------------------------------
+# TODO-63 Part A — console capture filter
+# ---------------------------------------------------------------------------
+
+class TestConsoleLogFilter:
+    """The launcher tails its captured *.console.log for ERROR/WARNING/Traceback
+    lines into debug_log.txt, leaving the raw firehose in the .console.log."""
+
+    def test_path_matches_operators_convention(self):
+        """Launcher and operators must agree on the per-phase console path so the
+        launcher finds the file the .bat actually wrote."""
+        jobs = r"C:\out\jobs"
+        assert _console_log_path_for(jobs, "job_0007", "both").endswith("job_0007.console.log")
+        assert _console_log_path_for(jobs, "job_0007", "bake").endswith("job_0007.bake.console.log")
+        assert _console_log_path_for(jobs, "job_0007", "render").endswith("job_0007.render.console.log")
+
+    def test_copies_only_signal_lines_with_pointer(self, tmp_path):
+        console = tmp_path / "job_0000.bake.console.log"
+        console.write_text(
+            "Fra:1 Mem:120M | Compositing\n"
+            "cycles | ERROR | Image file does not exist: D:\\old.png\n"
+            "Saved: render frame 1\n"
+            "WARNING: deprecated API used\n"
+            "Fra:2 Mem:121M\n",
+            encoding="utf-8")
+        debug_out = tmp_path / "debug_log.txt"
+        _filter_console_to_debug_log(str(console), str(debug_out), "job_0000")
+        text = debug_out.read_text(encoding="utf-8")
+        assert "Image file does not exist" in text         # ERROR line copied
+        assert "deprecated API used" in text               # WARNING line copied
+        assert "Fra:1" not in text and "Saved:" not in text # firehose NOT copied
+        assert "full console" in text and "job_0000.bake.console.log" in text  # pointer
+
+    def test_traceback_line_is_signal(self, tmp_path):
+        console = tmp_path / "job_0001.console.log"
+        console.write_text("Traceback (most recent call last):\n  File ...\n", encoding="utf-8")
+        debug_out = tmp_path / "debug_log.txt"
+        _filter_console_to_debug_log(str(console), str(debug_out), "job_0001")
+        assert "Traceback (most recent call last)" in debug_out.read_text(encoding="utf-8")
+
+    def test_clean_console_notes_no_signal(self, tmp_path):
+        console = tmp_path / "job_0002.console.log"
+        console.write_text("Fra:1\nSaved: ok\n", encoding="utf-8")
+        debug_out = tmp_path / "debug_log.txt"
+        _filter_console_to_debug_log(str(console), str(debug_out), "job_0002")
+        assert "no ERROR/WARNING/Traceback" in debug_out.read_text(encoding="utf-8")
+
+    def test_missing_console_is_noop(self, tmp_path):
+        debug_out = tmp_path / "debug_log.txt"
+        _filter_console_to_debug_log(str(tmp_path / "absent.console.log"),
+                                     str(debug_out), "job_0003")
+        assert not debug_out.exists()

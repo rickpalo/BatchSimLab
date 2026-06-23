@@ -133,6 +133,23 @@ def test_sync_frame_defaults_copies_scene_range(properties):
     properties._sync_frame_defaults(s2, ctx)
     assert (s2.sim_frame_start, s2.sim_frame_end) == (0, 0)
 
+    # TODO-66: a negative scene frame_start (pre-roll) must copy through too.
+    neg_scene = types.SimpleNamespace(frame_start=-50, frame_end=100)
+    neg_ctx = types.SimpleNamespace(scene=neg_scene)
+    s3 = types.SimpleNamespace(use_default_frames=False, sim_frame_start=0,
+                               sim_frame_end=0)
+    properties._sync_frame_defaults(s3, neg_ctx)
+    assert (s3.sim_frame_start, s3.sim_frame_end) == (-50, 100)
+
+
+def test_frame_start_end_allow_negative_values(properties):
+    """TODO-66: min was 1, which silently clamped a negative scene frame_start
+    (Blender itself allows frame numbers down to MINFRAME) both when typed
+    directly and when copied via _sync_frame_defaults. Must allow negative."""
+    ann = properties.SmokeSettings.__annotations__
+    assert ann["sim_frame_start"][1]["min"] <= -1048574
+    assert ann["sim_frame_end"][1]["min"] <= -1048574
+
 
 def test_on_render_sim_result_update_clears_show_results(properties):
     """Turning rendering off clears the now-meaningless display-results flag."""

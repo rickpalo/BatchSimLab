@@ -19,11 +19,17 @@ Output sections
   STILL — actual still time vs. _STILL_SECS_DEFAULT
   JOB TOTAL — overall elapsed vs. initial total estimate
   PER-JOB SUMMARY TABLE — one line per job
+  ALL-JOBS ETA TRAJECTORY — batch_eta_tick estimate-over-time vs. actual total (TODO-63 Part B)
+
+Per-frame timing (TODO-24), parsed from the captured console logs:
+    python analyze_estim.py --frames <jobs_directory>
 """
 
+import glob
 import json
 import math
 import os
+import re
 import sys
 from collections import defaultdict
 
@@ -441,6 +447,160 @@ def _section_summary_table(ev, jobs):
 
 
 # ---------------------------------------------------------------------------
+# TODO-63 Part B — all-jobs ETA trajectory (did the estimate converge?)
+# ---------------------------------------------------------------------------
+
+def _split_batches(records):
+    """Walk records in file order, splitting into per-batch segments.
+
+    Returns a list of dicts: {"ticks": [...batch_eta_tick...],
+    "actual_total": <batch_complete.elapsed_secs or None>}.  A new segment
+    starts at each batch_start; the matching batch_complete closes it.
+    """
+    batches = []
+    cur = None
+    for r in records:
+        ev = r.get("event")
+        if ev == "batch_start":
+            cur = {"ticks": [], "actual_total": None}
+            batches.append(cur)
+        elif ev == "batch_eta_tick":
+            if cur is None:
+                # A tick with no open batch: attach to the most recent batch if one
+                # exists (e.g. a final tick that landed just after batch_complete in
+                # an older log); only start a fresh segment if there's nothing yet.
+                if batches:
+                    cur = batches[-1]
+                else:
+                    cur = {"ticks": [], "actual_total": None}
+                    batches.append(cur)
+            cur["ticks"].append(r)
+        elif ev == "batch_complete":
+            if cur is not None:
+                cur["actual_total"] = r.get("elapsed_secs")
+                cur = None
+    return [b for b in batches if b["ticks"]]
+
+
+def _section_eta_trajectory(records):
+    print("ALL-JOBS ETA TRAJECTORY  —  did 'All jobs: …' converge to the actual total?")
+    print("  predicted_total = elapsed + remaining_secs (Bar-3 ETA at each tick)")
+    print()
+
+    batches = _split_batches(records)
+    if not batches:
+        print("  (no batch_eta_tick records — run a batch with Collect Estimation Data on)")
+        print()
+        return
+
+    for bi, b in enumerate(batches, 1):
+        ticks  = b["ticks"]
+        actual = b["actual_total"]
+        print(f"  Batch {bi}:  {len(ticks)} tick(s)"
+              + (f"   actual total = {actual:.0f}s ({actual/3600:.2f} h)" if actual else
+                 "   actual total = (batch not yet complete)"))
+        print(f"    {'Elapsed':>9} {'Phase':>6} {'Done':>7} {'Remaining':>10} "
+              f"{'Predicted':>10} {'Err vs actual':>14}")
+        print(f"    {'-'*9} {'-'*6} {'-'*7} {'-'*10} {'-'*10} {'-'*14}")
+        for t in ticks:
+            elapsed = t.get("elapsed", 0.0)
+            remain  = t.get("remaining_secs", 0.0)
+            phase   = t.get("phase", "?")
+            done    = f"{t.get('jobs_done','?')}/{t.get('jobs_total','?')}"
+            pred    = elapsed + remain
+            if actual:
+                err = f"{_pct_err(pred, actual):+.1f}%"
+            else:
+                err = "—"
+            print(f"    {elapsed:>9.0f} {phase:>6} {done:>7} "
+                  f"{remain:>10.0f} {pred:>10.0f} {err:>14}")
+        # Convergence summary: did |predicted - actual| shrink from first to last tick?
+        if actual and len(ticks) >= 2:
+            first_pred = ticks[0].get("elapsed", 0.0) + ticks[0].get("remaining_secs", 0.0)
+            last_pred  = ticks[-1].get("elapsed", 0.0) + ticks[-1].get("remaining_secs", 0.0)
+            first_err  = abs(first_pred - actual)
+            last_err   = abs(last_pred - actual)
+            verdict = "converged" if last_err < first_err else "diverged / flat"
+            print(f"    → initial estimate {first_pred:.0f}s ({_pct_err(first_pred, actual):+.0f}%), "
+                  f"final {last_pred:.0f}s ({_pct_err(last_pred, actual):+.0f}%) — {verdict}")
+        print()
+
+
+# ---------------------------------------------------------------------------
+# TODO-24 — per-frame render timing parsed from captured *.console.log
+# ---------------------------------------------------------------------------
+# Blender's background render prints a status line per progress update:
+#   Fra:7 Mem:412.50M ... Time:00:09.84 | Remaining:00:01.23 | ...
+# The Time: field is cumulative from the start of THAT frame and resets when the
+# frame advances, so the maximum Time seen for a given Fra:N ≈ that frame's total
+# render time.  This is a free per-frame timing source (TODO-24) that needs no
+# extra worker instrumentation — it falls out of the Part A console capture.
+# NOTE: validate this regex against the first real console.log a sweep produces;
+# Blender's status-line format has shifted between releases.
+
+_FRA_TIME_RE = re.compile(r"\bFra:(\d+)\b.*?\bTime:(\d{1,2}:\d{2}(?::\d{2})?\.\d{1,2})")
+
+
+def _blender_time_to_secs(tok):
+    """Parse a Blender 'Time:' token (MM:SS.ss or HH:MM:SS.ss) to float seconds."""
+    parts = tok.split(":")
+    try:
+        if len(parts) == 2:
+            return int(parts[0]) * 60 + float(parts[1])
+        if len(parts) == 3:
+            return int(parts[0]) * 3600 + int(parts[1]) * 60 + float(parts[2])
+    except ValueError:
+        return None
+    return None
+
+
+def _parse_frame_times(text):
+    """Return {frame_number: max_seconds} parsed from console text.
+
+    Keeps the MAX Time per frame (the last/largest update before the frame
+    advanced ≈ that frame's render time).  Lines that don't match are ignored.
+    """
+    per_frame = {}
+    for m in _FRA_TIME_RE.finditer(text):
+        frame = int(m.group(1))
+        secs  = _blender_time_to_secs(m.group(2))
+        if secs is None:
+            continue
+        if frame not in per_frame or secs > per_frame[frame]:
+            per_frame[frame] = secs
+    return per_frame
+
+
+def _section_frame_times(jobs_dir):
+    print("PER-FRAME RENDER TIMING  —  parsed from *.console.log (TODO-24)")
+    print(f"  scanning: {jobs_dir}")
+    print()
+
+    files = sorted(glob.glob(os.path.join(jobs_dir, "*.console.log")))
+    if not files:
+        print("  (no *.console.log files — run a batch with Collect Debug Log on)")
+        print()
+        return
+
+    print(f"  {'Console file':<40} {'Frames':>7} {'Mean s':>8} {'Median s':>9} {'Max s':>8}")
+    print(f"  {'-'*40} {'-'*7} {'-'*8} {'-'*9} {'-'*8}")
+    for f in files:
+        try:
+            with open(f, encoding="utf-8", errors="replace") as fh:
+                pf = _parse_frame_times(fh.read())
+        except OSError:
+            continue
+        name = os.path.basename(f)[:40]
+        if not pf:
+            print(f"  {name:<40} {0:>7} {'—':>8} {'—':>9} {'—':>8}")
+            continue
+        vals = list(pf.values())
+        print(f"  {name:<40} {len(vals):>7} "
+              f"{_mean(vals):>8.2f} {_median(vals):>9.2f} {max(vals):>8.2f}")
+    print()
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -492,6 +652,8 @@ def analyze(path):
     _section_job_total(ev)
     print(thin); print()
     _section_summary_table(ev, jobs)
+    print(thin); print()
+    _section_eta_trajectory(records)   # TODO-63 Part B
 
 
 if __name__ == "__main__":
@@ -499,5 +661,12 @@ if __name__ == "__main__":
         print(__doc__)
         print("Usage: python analyze_estim.py <path_to_estim_log.jsonl>")
         print("       python analyze_estim.py <output_directory>")
+        print("       python analyze_estim.py --frames <jobs_directory>   (TODO-24 per-frame timing)")
         sys.exit(1)
-    analyze(sys.argv[1])
+    if sys.argv[1] == "--frames":
+        if len(sys.argv) < 3:
+            print("Usage: python analyze_estim.py --frames <jobs_directory>")
+            sys.exit(1)
+        _section_frame_times(sys.argv[2])
+    else:
+        analyze(sys.argv[1])

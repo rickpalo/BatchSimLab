@@ -140,3 +140,43 @@ def test_scene_has_camera_behaves(operators):
 def test_param_bounds_is_the_moved_table(operators):
     assert operators._PARAM_BOUNDS["resolution"] == (8.0, None)
     assert operators._PARAM_BOUNDS["alpha"] == (-5.0, 5.0)
+
+
+class TestConsoleLogRedirect:
+    """TODO-63 Part A: _job_run_cmd appends a per-job/-phase console redirect only
+    when collect_debug_log is on; otherwise the original 2>nul / pass-through tail."""
+
+    _JOB = r"C:\out\jobs\job_0007.json"
+
+    def _cmd(self, operators, *, launcher, render_mode, phase, dbg):
+        return operators._job_run_cmd(
+            "py.exe", r"C:\out\smoke_launcher.py", r"C:\out\smoke_worker.py",
+            r"C:\blender.exe", r"C:\scene.blend", self._JOB, render_mode,
+            launcher, phase=phase, collect_debug_log=dbg)
+
+    def test_console_path_per_phase(self, operators):
+        assert operators._console_log_path(self._JOB, "both").endswith("job_0007.console.log")
+        assert operators._console_log_path(self._JOB, "bake").endswith("job_0007.bake.console.log")
+        assert operators._console_log_path(self._JOB, "render").endswith("job_0007.render.console.log")
+
+    def test_off_preserves_original_tails(self, operators):
+        # Launcher path: no redirect, no 2>nul.
+        c = self._cmd(operators, launcher=True, render_mode="CYCLES", phase="bake", dbg=False)
+        assert ".console.log" not in c and "2>nul" not in c
+        # Direct background fallback keeps its 2>nul.
+        c = self._cmd(operators, launcher=False, render_mode="CYCLES", phase="bake", dbg=False)
+        assert c.endswith(" 2>nul")
+        # Direct EEVEE windowed fallback: neither redirect nor 2>nul.
+        c = self._cmd(operators, launcher=False, render_mode="EEVEE", phase="render", dbg=False)
+        assert ".console.log" not in c and "2>nul" not in c
+
+    def test_on_redirects_all_forms(self, operators):
+        for launcher, rm, phase in [
+            (True,  "CYCLES", "bake"),
+            (False, "CYCLES", "bake"),
+            (False, "EEVEE",  "render"),
+        ]:
+            c = self._cmd(operators, launcher=launcher, render_mode=rm, phase=phase, dbg=True)
+            assert "2>nul" not in c, (launcher, rm, phase)
+            assert c.rstrip().endswith('2>&1'), c
+            assert "job_0007.bake.console.log" in c or "job_0007.render.console.log" in c

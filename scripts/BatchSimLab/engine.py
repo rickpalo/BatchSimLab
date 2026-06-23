@@ -57,6 +57,26 @@ from .operators import _scene_has_camera
 # overhead dominates — known model limitation.
 _BAKE_RATE_PER_RES3_FRAME = 1.8261e-07  # s / (res^3 * frame); median of 119 res=128 samples
 
+# TODO-51 (partial): noise sim runs an extra wavelet-turbulence up-res pass on top
+# of the base data bake, which _BAKE_RATE_PER_RES3_FRAME alone doesn't capture.
+# Calibrated from the 2026-06-22 AutoTest sweep (24 jobs, res 64/128/256,
+# noise_upres 0/1/2; see `analyze_estim.py` BAKE table actual/default ratios,
+# res=64 excluded — per-job overhead dominates there same as the base rate's
+# known low-res limitation above). Upres 3+ unmeasured; falls back to the
+# highest known bucket. Render time (EEVEE) also rises with noise_upres but
+# isn't modelled yet — still open (needs the samples-term calibration batch
+# from the TODO-51 plan).
+_BAKE_NOISE_UPRES_MULTIPLIER = {0: 1.0, 1: 2.3, 2: 3.8}
+_BAKE_NOISE_UPRES_MULTIPLIER_DEFAULT = 3.8
+
+
+def _bake_noise_multiplier(use_noise, noise_upres):
+    """Multiplier applied to the flat bake-rate estimate for noise sim cost."""
+    if not use_noise:
+        return 1.0
+    return _BAKE_NOISE_UPRES_MULTIPLIER.get(noise_upres, _BAKE_NOISE_UPRES_MULTIPLIER_DEFAULT)
+
+
 # Render estimate: render_secs ≈ rate × width × height × frames
 # CYCLES: no real data yet — kept as placeholder derived from 15 s/frame at 1920×1080.
 # EEVEE:  calibrated from 167 samples (cv=27%, median 7.92e-07).
@@ -324,6 +344,42 @@ def _estim_log(record: dict) -> None:
         pass
 
 
+# TODO-63 Part B — periodic all-jobs ETA snapshots.  The displayed "All jobs: …"
+# figure (_estimate_batch_remaining) is recomputed every ~5 s poll but never
+# persisted, so there's no way to spot-check after a sweep whether that estimate
+# was in the ballpark, updated, and converged toward the true wall-clock total.
+# We log one `batch_eta_tick` to estim_log.jsonl at most every _ETA_TICK_MIN_SECS
+# (the poll itself fires far too often to log every tick).  Gated, like every
+# other estimation record, by collect_estimation_data via _estim_log's no-op path.
+_ETA_TICK_MIN_SECS: float = 300.0   # ≥5 min between snapshots
+
+
+def _log_eta_tick(*, now, elapsed, jobs_done, total, phase,
+                  remaining_secs, job_remaining_secs, force=False):
+    """Throttled all-jobs ETA snapshot → estim_log (event=batch_eta_tick).
+
+    `force` bypasses the throttle — used for the initial tick (first poll with an
+    active job, captures the starting estimate) and the final tick at
+    batch_complete (so analyze_estim can overlay the true total on the same axis).
+    Returns True if a tick was logged, False if throttled.  No-op for the file
+    itself when collect_estimation_data is off (_estim_log gates on output_path).
+    """
+    last = _poll_state.get("eta_tick_ts", 0.0)
+    if not force and (now - last) < _ETA_TICK_MIN_SECS:
+        return False
+    _poll_state["eta_tick_ts"] = now
+    _estim_log({
+        "event":              "batch_eta_tick",
+        "elapsed":            round(elapsed, 1),
+        "jobs_done":          jobs_done,
+        "jobs_total":         total,
+        "phase":              phase,
+        "remaining_secs":     round(remaining_secs, 1),
+        "job_remaining_secs": round(job_remaining_secs, 1),
+    })
+    return True
+
+
 def _estim_reset_job(log_key: str) -> None:
     """Clear per-job estimation state when a new job is detected."""
     _estim.update({
@@ -349,7 +405,8 @@ def _estim_reset_job(log_key: str) -> None:
 # The launcher kills the process after 30 min of log silence; the poller warns
 # at 35 min so the user sees a UI indicator even if the launcher also died.
 _POLLER_STALE_SECS: float = 35 * 60
-_poll_state: dict = {"log_key": "", "log_mtime": 0.0, "stale_since": 0.0}
+_poll_state: dict = {"log_key": "", "log_mtime": 0.0, "stale_since": 0.0,
+                     "eta_tick_ts": 0.0}   # TODO-63 Part B: last batch_eta_tick time
 
 
 def _poll_batch_progress():
@@ -419,6 +476,7 @@ def _poll_batch_progress_impl():
             if s.collect_estimation_data:
                 _estim["output_path"] = _op
             _estim["batch_logged"] = True
+            _poll_state["eta_tick_ts"] = 0.0   # TODO-63 Part B: arm initial tick
             _estim_log({
                 "event": "batch_start", "jobs": total,
                 "constants": {
@@ -446,11 +504,20 @@ def _poll_batch_progress_impl():
             will_auto_retry = _should_auto_retry(errors, s.auto_retry_failed, _auto_retry_count)
 
             # Estimation log: batch complete.
+            _final_elapsed = round(time.time() - _bt("start_time"), 1)
+            # TODO-63 Part B: final ETA tick (remaining=0) so analyze_estim can plot
+            # the estimate trajectory ending exactly on the true total wall-clock.
+            # Emitted BEFORE batch_complete so it falls inside this batch's segment
+            # (analyze_estim._split_batches closes the segment on batch_complete).
+            _log_eta_tick(now=time.time(), elapsed=_final_elapsed,
+                          jobs_done=max(total - errors, 0), total=total,
+                          phase="done", remaining_secs=0.0,
+                          job_remaining_secs=0.0, force=True)
             _estim_log({
                 "event":        "batch_complete",
                 "jobs":         total,
                 "errors":       errors,
-                "elapsed_secs": round(time.time() - _bt("start_time"), 1),
+                "elapsed_secs": _final_elapsed,
             })
             _estim["batch_logged"] = False   # allow logging for any future run
 
@@ -480,6 +547,8 @@ def _poll_batch_progress_impl():
             s.batch_render_width      = 0
             s.batch_render_height     = 0
             s.batch_render_mode       = "CYCLES"
+            s.batch_use_noise         = False
+            s.batch_noise_upres       = 0
             _bt_set("bake_start_time", 0.0)
             _bt_set("render_start_time", 0.0)
             _bt_set("still_start_time", 0.0)
@@ -599,6 +668,8 @@ def _poll_batch_progress_impl():
                     s.batch_render_width  = jd.get("render_resolution_x", 0)
                     s.batch_render_height = jd.get("render_resolution_y", 0)
                     s.batch_render_mode   = jd.get("render_mode", "CYCLES")
+                    s.batch_use_noise     = bool(jd.get("params", {}).get("use_noise", False))
+                    s.batch_noise_upres   = int(jd.get("params", {}).get("noise_upres", 0))
                     _estim["job_name"]    = jd.get("name", log_stem)
                 except (OSError, json.JSONDecodeError):
                     s.batch_frame_end     = 0
@@ -606,6 +677,8 @@ def _poll_batch_progress_impl():
                     s.batch_render_width  = 0
                     s.batch_render_height = 0
                     s.batch_render_mode   = "CYCLES"
+                    s.batch_use_noise     = False
+                    s.batch_noise_upres   = 0
                 _bt_set("bake_start_time", 0.0)
                 _bt_set("render_start_time", 0.0)
                 _bt_set("still_start_time", 0.0)
@@ -821,7 +894,8 @@ def _poll_batch_progress_impl():
             render_rate  = (_RENDER_RATE_EEVEE_PER_PIXEL_FRAME
                             if s.batch_render_mode == "EEVEE"
                             else _RENDER_RATE_CYCLES_PER_PIXEL_FRAME)
-            default_bake_secs   = (_BAKE_RATE_PER_RES3_FRAME * (batch_res ** 3) * frame_end
+            noise_mult = _bake_noise_multiplier(s.batch_use_noise, s.batch_noise_upres)
+            default_bake_secs   = (_BAKE_RATE_PER_RES3_FRAME * (batch_res ** 3) * frame_end * noise_mult
                                    if s.batch_resolution > 0
                                    else _BAKE_RATE_DEFAULT * frame_end)
             default_render_secs = (render_rate * render_px * frame_end
@@ -1013,6 +1087,19 @@ def _poll_batch_progress_impl():
             )
             s.batch_time_remaining = f"All jobs: {_format_eta(remaining)}"
 
+            # TODO-63 Part B: snapshot the live all-jobs ETA on a throttle.  The
+            # first poll with an active job forces a tick (initial estimate, since
+            # `remaining` isn't computable in the early batch_start block); the
+            # rest are throttled to _ETA_TICK_MIN_SECS.  Batch-level phase: still
+            # baking until every job's bake is done (bake-only stays "bake").
+            _eta_phase = "bake" if (_bake_only or _bake_done_n < total) else "render"
+            _log_eta_tick(
+                now=now, elapsed=now - _bt("start_time"),
+                jobs_done=done_success, total=total, phase=_eta_phase,
+                remaining_secs=remaining, job_remaining_secs=job_remaining,
+                force=(_poll_state["eta_tick_ts"] == 0.0),
+            )
+
         else:
             s.batch_subtask_text   = ""
             s.batch_subtask_factor = 0.0
@@ -1154,6 +1241,8 @@ class SMOKE_OT_run_batch(bpy.types.Operator):
         s.batch_render_width      = 0
         s.batch_render_height     = 0
         s.batch_render_mode       = "CYCLES"
+        s.batch_use_noise         = False
+        s.batch_noise_upres       = 0
         _bt_set("bake_start_time", 0.0)
         _bt_set("render_start_time", 0.0)
         _bt_set("still_start_time", 0.0)
@@ -1287,9 +1376,18 @@ class SMOKE_OT_retry_failed(bpy.types.Operator):
                     f'--python "{dest_worker}" -- "{retry_json}"'
                 )
 
+            # TODO-63 Part A: capture the retry run's full console (it runs Blender
+            # directly, no launcher — so its stdout+stderr would otherwise vanish/
+            # be discarded by `2>nul`).  Per-job `<retry_stem>.console.log`.
+            if s.collect_debug_log:
+                _retry_console = os.path.splitext(retry_json)[0] + ".console.log"
+                _retry_tail = f' > "{_retry_console}" 2>&1'
+            else:
+                _retry_tail = " 2>nul"
+
             bat_lines += [
                 f"echo === Retrying: {name} ===",
-                f'{blender_cmd} 2>nul',
+                f'{blender_cmd}{_retry_tail}',
                 "if errorlevel 1 (",
                 "    echo   WARNING: retry exited with error",
                 "    set /a ERRORS+=1",
@@ -1352,6 +1450,8 @@ class SMOKE_OT_retry_failed(bpy.types.Operator):
         s.batch_render_width      = 0
         s.batch_render_height     = 0
         s.batch_render_mode       = "CYCLES"
+        s.batch_use_noise         = False
+        s.batch_noise_upres       = 0
         _bt_set("bake_start_time", 0.0)
         _bt_set("render_start_time", 0.0)
         _bt_set("still_start_time", 0.0)
@@ -1603,6 +1703,8 @@ class SMOKE_OT_remove_all_jobs(bpy.types.Operator):
         s.batch_render_width     = 0
         s.batch_render_height    = 0
         s.batch_render_mode      = "CYCLES"
+        s.batch_use_noise         = False
+        s.batch_noise_upres       = 0
         _bt_set("bake_start_time", 0.0)
         _bt_set("render_start_time", 0.0)
         _bt_set("still_start_time", 0.0)
@@ -1703,6 +1805,8 @@ class SMOKE_OT_monitor_existing_jobs(bpy.types.Operator):
         s.batch_render_width      = 0
         s.batch_render_height     = 0
         s.batch_render_mode       = "CYCLES"
+        s.batch_use_noise         = False
+        s.batch_noise_upres       = 0
         _bt_set("bake_start_time", 0.0)
         _bt_set("render_start_time", 0.0)
         _bt_set("still_start_time", 0.0)

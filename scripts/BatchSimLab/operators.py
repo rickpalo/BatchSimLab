@@ -132,9 +132,28 @@ def _existing_jobs_for_bat(jobs_dir, job_start_index):
     return result
 
 
+def _console_log_path(job_path, phase="both"):
+    """Per-job (and per-phase) console-capture file for the `collect_debug_log` redirect.
+
+    TODO-63 Part A.  Derived purely from the job JSON path + phase so the addon
+    (which writes the `.bat` redirect) and smoke_launcher.py (which scans the file
+    afterwards for the debug_log.txt filter) compute the SAME path independently:
+
+        job_0007.json  +  phase "both"   →  job_0007.console.log
+        job_0007.json  +  phase "bake"   →  job_0007.bake.console.log
+        job_0007.json  +  phase "render" →  job_0007.render.console.log
+
+    The per-phase split mirrors the existing `<stem>.<phase>.done` sentinels so the
+    bake pass's capture isn't clobbered by the render pass (each `>` truncates).
+    """
+    _stem = os.path.splitext(job_path)[0]
+    _tag  = "" if phase == "both" else f".{phase}"
+    return f"{_stem}{_tag}.console.log"
+
+
 def _job_run_cmd(python_exe, dest_launcher, dest_worker, blender_exe,
                  blend_file, job_path, render_mode, launcher_exists,
-                 phase="both"):
+                 phase="both", collect_debug_log=False):
     """Return the command line that runs a single job inside run_smoke_batch.bat.
 
     Prefers smoke_launcher.py (crash detection + logging); falls back to calling
@@ -146,22 +165,43 @@ def _job_run_cmd(python_exe, dest_launcher, dest_worker, blender_exe,
     even for EEVEE jobs (baking is engine-independent), ``"render"`` keeps the
     visible window for EEVEE, and ``"both"`` (the default) preserves the
     original single-pass invocation with no ``--phase`` argument.
+
+    TODO-63 Part A — when `collect_debug_log` is on, the whole job command's
+    stdout+stderr is redirected to a per-job/-phase `*.console.log` instead of
+    being discarded (``2>nul``) or passed through to the cmd window.  This is the
+    only on-disk capture of Blender's C-level console (Cycles/Mantaflow `Fra:N`
+    timing, `ERROR Image file …` lines, Python tracebacks, startup-crash output) —
+    none of which reaches the curated job `.log` or `debug_log.txt`.  The `.bat`
+    redirect is chosen over a worker fd-dup because it also survives a hard crash
+    and catches the C-level prints a Python `sys.stdout=` reassignment would miss.
     """
     _phase_suffix = "" if phase == "both" else f' --phase {phase}'
+    # When capturing, the redirect replaces the usual `2>nul`/pass-through and
+    # applies to BOTH the launcher and direct-Blender forms (it wraps whichever
+    # process the .bat actually spawns).  `> file 2>&1` keeps the command's own
+    # errorlevel intact, so the surrounding `if errorlevel 1` check is unaffected.
+    if collect_debug_log:
+        _redir = f' > "{_console_log_path(job_path, phase)}" 2>&1'
+    else:
+        _redir = None  # sentinel: use each form's original tail (pass-through / 2>nul)
+
     if launcher_exists:
-        return f'"{python_exe}" "{dest_launcher}" "{blender_exe}" "{job_path}"{_phase_suffix}'
+        _tail = _redir if _redir is not None else ""
+        return f'"{python_exe}" "{dest_launcher}" "{blender_exe}" "{job_path}"{_phase_suffix}{_tail}'
     # Fallback (no launcher) — mirror the launcher's mode decision.
     _windowed = (render_mode == "EEVEE" and phase != "bake")
     if _windowed:
+        _tail = _redir if _redir is not None else ""
         return (
             f'"{blender_exe}" "{blend_file}" '
             f'--window-geometry 0 0 100 100 --factory-startup '
-            f'--python "{dest_worker}" -- "{job_path}"{_phase_suffix}'
+            f'--python "{dest_worker}" -- "{job_path}"{_phase_suffix}{_tail}'
         )
+    _tail = _redir if _redir is not None else " 2>nul"
     return (
         f'"{blender_exe}" "{blend_file}" '
         f'--background --factory-startup '
-        f'--python "{dest_worker}" -- "{job_path}"{_phase_suffix} 2>nul'
+        f'--python "{dest_worker}" -- "{job_path}"{_phase_suffix}{_tail}'
     )
 
 
@@ -448,7 +488,8 @@ def export_batch(context):
             _alias = os.path.join(jobs_dir, f"job_{_i:04d}.done") if is_final else None
             _cmd = _job_run_cmd(python_exe, dest_launcher, dest_worker,
                                 blender_exe, blend_file, _jp, _rm,
-                                _launcher_exists, phase=phase)
+                                _launcher_exists, phase=phase,
+                                collect_debug_log=_dbg)
             lines += _job_bat_block(_i + 1, total_jobs, _n, _cmd, _dp,
                                     label=label, alias_done_path=_alias)
         return lines

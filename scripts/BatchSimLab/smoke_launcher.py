@@ -30,7 +30,7 @@ Behaviour
 No third-party dependencies — stdlib + tasklist.exe (built into Windows).
 """
 
-LAUNCHER_VERSION = "0.6.4"
+LAUNCHER_VERSION = "0.6.5"
 
 import atexit
 import ctypes
@@ -329,6 +329,60 @@ def _save_crash_log(jobs_dir, job_stem, launch_time=None, blender_exe=None):
 
 
 # ---------------------------------------------------------------------------
+# TODO-63 Part A — high-signal filter from the captured console → debug_log.txt
+# ---------------------------------------------------------------------------
+# When collect_debug_log is on, the .bat redirects this job's full stdout+stderr
+# to <jobs_dir>/<stem>[.<phase>].console.log (Blender's C-level firehose — see
+# _console_log_path in operators.py).  That file is the raw record; here we tail
+# it for the high-signal lines (ERROR / WARNING / Traceback) and copy just those
+# into the shared debug_log.txt, plus a one-line pointer to the full file.  Keeps
+# debug_log.txt readable instead of ballooning it with a 500-frame render's tens
+# of thousands of `Fra:N` lines.
+
+_CONSOLE_SIGNAL_RE = re.compile(r"ERROR|WARNING|Traceback \(most recent call last\)")
+_CONSOLE_FILTER_MAX = 300   # cap matched lines copied per job (avoid runaway floods)
+
+
+def _console_log_path_for(jobs_dir, job_stem, phase):
+    """Mirror operators._console_log_path so the launcher finds the file the .bat wrote."""
+    _tag = "" if phase == "both" else f".{phase}"
+    return os.path.join(jobs_dir, f"{job_stem}{_tag}.console.log")
+
+
+def _filter_console_to_debug_log(console_path, debug_out, job_stem):
+    """Copy ERROR/WARNING/Traceback lines from console_path into debug_out.
+
+    Best-effort: every failure is swallowed (a diagnostics convenience must never
+    affect the job's exit status).  No-op when the console file is absent (e.g.
+    collect_debug_log was off, so the .bat never created it).
+    """
+    if not console_path or not debug_out or not os.path.exists(console_path):
+        return
+    matched = []
+    try:
+        with open(console_path, "r", encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                if _CONSOLE_SIGNAL_RE.search(line):
+                    matched.append(line.rstrip("\n"))
+                    if len(matched) >= _CONSOLE_FILTER_MAX:
+                        matched.append(f"... (truncated at {_CONSOLE_FILTER_MAX} matches)")
+                        break
+    except OSError:
+        return
+    ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        with open(debug_out, "a", encoding="utf-8") as fh:
+            fh.write(f"{ts}  [console/{job_stem}]  full console → {console_path}\n")
+            if matched:
+                for m in matched:
+                    fh.write(f"{ts}  [console/{job_stem}]  {m}\n")
+            else:
+                fh.write(f"{ts}  [console/{job_stem}]  (no ERROR/WARNING/Traceback lines)\n")
+    except OSError:
+        pass
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -600,6 +654,13 @@ def main():
     # the worker; the launcher only writes the console + debug_log.txt).
     _dlog(f"exit: pid={blender_pid}  exit_code={exit_code}  "
           f"time_to_exit={_time_to_exit:.1f}s")
+
+    # TODO-63 Part A: tail this job's captured console for high-signal lines into
+    # debug_log.txt (Blender exited above, so the .console.log is flushed/closed
+    # for its portion).  Best-effort + gated; raw firehose stays in the .log file.
+    if collect_debug_log:
+        _filter_console_to_debug_log(
+            _console_log_path_for(jobs_dir, job_stem, phase), _debug_out, job_stem)
 
     if exit_code != 0:
         # TODO-22 (v0.2.26): Crash timing inconsistency observed in production — one

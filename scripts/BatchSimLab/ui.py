@@ -50,9 +50,16 @@ _VELOCITY_FORMAT_HINT = "x, y, z  (e.g. 0, 0, 1)"
 #   • 256×2 = 512³  — fine
 #   • 256×3 = 768³  — crashed (tbbmalloc) until re-exported + retried
 #   • 256×4 = 1024³ — hung, killed by the launcher's stale-log watchdog
-# It is NOT a hard limit: every config eventually completed after re-export and
-# restart, so callers warn the user rather than block.  The edge threshold below
-# sits just above the known-good 512³ case so it flags only the flaky zone.
+# It is NOT a hard limit on THIS hardware: every config eventually completed
+# after re-export and restart, so callers warn the user rather than block.
+# BUG-023 (2026-06-22): on a second machine the same 256×2 = 512³ case crashed
+# on every one of 12+ attempts over 31h, never completing — the threshold is
+# hardware-dependent, not a universal constant (exact mechanism unconfirmed;
+# the dev-machine RAM stayed ~40 GB even at 768³/1024³, so simple memory
+# exhaustion doesn't obviously explain why 512³ differs on other hardware).
+# The edge threshold below sits just above the dev-machine's known-good 512³
+# case so it flags only the flaky zone there; it will under-warn on weaker
+# hardware until/unless this becomes per-machine-configurable.
 _NOISE_UPRES_EDGE_WARN = 512   # warn when (resolution × noise_upres) exceeds this
 
 

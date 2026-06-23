@@ -250,8 +250,13 @@ are silently skipped.
 | Dissolve | `Dissolve_Text` | `Dissolve: Time: 400 \| Slow-Yes` (emitter settings prepended) |
 | Bake Time | `Time_Text` | `Bake: 5 min 29 sec` |
 
-Emitter settings (when present) are prepended to the Dissolve/Time overlays, e.g.
-`smokeGenerator_static: Init Temp-1, Dens--2, SurfE-10, VolE-1`.
+Emitter settings (when present) are prepended to the **Dissolve** overlay, one
+line per emitter stacked with `Emitter[0]` topmost, e.g.
+`Emitter: Init Temp-1, Dens--2, SurfE-10, VolE-1` (a lone emitter), or
+`Emitter[0]: …` / `Emitter[1]: …` when several are present. The generic
+`Emitter`/`Emitter[i]` label (in the same name-sorted order make_name uses for
+its `E0`/`E1` tokens) keeps the overlay narrow instead of repeating the long
+flow-object name. The Bake Time overlay carries only the bake time.
 
 ---
 
@@ -268,6 +273,8 @@ Emitter settings (when present) are prepended to the Dissolve/Time overlays, e.g
         job_0000.bake.done      ← bake-pass marker
         job_0000.render.done    ← render-pass marker
         job_0000.done           ← final (unphased) completion marker
+        job_0000.bake.console.log   ← full Blender console (only if Collect Debug Logs is on)
+        job_0000.render.console.log ←   "  render pass
         ...
     Renders/
         <jobname>.mp4           ← playblast animation
@@ -277,7 +284,19 @@ Emitter settings (when present) are prepended to the Dissolve/Time overlays, e.g
         <jobname>/              ← per-job simulation cache (data/ + noise/)
     estim_log.jsonl             ← estimate-vs-actual log (if enabled)
     perf_log.json               ← per-job performance records (render pass)
+    debug_log.txt               ← addon/launcher diagnostics (if Collect Debug Logs is on)
 ```
+
+> **Collect Debug Logs** (Diagnostics): when enabled, each job's *full* Blender
+> stdout+stderr — the C-level console Blender normally prints only to the cmd
+> window (Cycles/Mantaflow `Fra:N` timing, `ERROR Image file …` lines, Python
+> tracebacks, startup-crash output) — is captured to a per-job/-phase
+> `*.console.log`. The launcher then copies just the `ERROR`/`WARNING`/`Traceback`
+> lines into the shared `debug_log.txt` (with a pointer to the full file), so the
+> shared log stays readable. These files can be large; the flag is off by default.
+> Trade-off: with it on, the batch console window shows only the per-job headers
+> (the firehose goes to the file). `tools/analyze_estim.py --frames <jobs_dir>`
+> parses per-frame render timing out of the captured logs.
 
 > Marker files: the two-pass pipeline writes `.bake.done` / `.render.done` per
 > phase (and `.bake.crashed` / `.render.crashed` on failure). The unphased

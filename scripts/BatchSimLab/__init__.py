@@ -71,7 +71,7 @@ Requires Blender 4.x (tested on 4.5.5 and 5.1.1) on Windows 10/11.  May work on 
 bl_info = {
     "name":        "BatchSimLab",
     "author":      "Rick Palo",
-    "version":     (0, 9, 8),
+    "version":     (0, 9, 10),
     "blender":     (4, 0, 0),
     "location":    "View3D > Sidebar > BatchLab",
     "description": "Batch smoke simulation parameter sweeper with CSV logging "
@@ -308,8 +308,8 @@ DOCS_URL = "https://github.com/rickpalo/BatchSimLab/blob/main/DOCUMENTATION.md"
 # Expected version strings in the helper files exported to the output folder.
 # When Run Batch detects a mismatch it warns the user to re-run Export Batch.
 # Keep these in sync with WORKER_VERSION / LAUNCHER_VERSION in those files.
-_EXPECTED_WORKER_VERSION   = "0.9.1"
-_EXPECTED_LAUNCHER_VERSION = "0.6.4"
+_EXPECTED_WORKER_VERSION   = "0.9.2"
+_EXPECTED_LAUNCHER_VERSION = "0.6.5"
 
 
 def _read_helper_version(path: str, var_name: str) -> str:
@@ -556,6 +556,8 @@ def _reset_on_load(dummy=None):
         s.batch_render_width      = 0
         s.batch_render_height     = 0
         s.batch_render_mode       = "CYCLES"
+        s.batch_use_noise         = False
+        s.batch_noise_upres       = 0
         _bt_set("bake_start_time", 0.0)
         _bt_set("render_start_time", 0.0)
         _bt_set("still_start_time", 0.0)

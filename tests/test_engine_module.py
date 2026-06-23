@@ -47,6 +47,8 @@ _ENGINE_PRIVATE = [
     "_last_auto_index", "_auto_retry_count",
     "_BAKE_RATE_PER_RES3_FRAME", "_RENDER_RATE_CYCLES_PER_PIXEL_FRAME",
     "_RENDER_RATE_EEVEE_PER_PIXEL_FRAME", "_BAKE_RATE_DEFAULT", "_RENDER_RATE_DEFAULT",
+    "_BAKE_NOISE_UPRES_MULTIPLIER", "_BAKE_NOISE_UPRES_MULTIPLIER_DEFAULT",
+    "_bake_noise_multiplier",
 ]
 
 # Names engine's operators / _estim_log reach via a function-local deferred import
@@ -131,6 +133,18 @@ def test_should_auto_retry_behaves(engine):
     assert engine._should_auto_retry(2, False, 0) is False  # disabled
     assert engine._should_auto_retry(2, True, 0) is True
     assert engine._should_auto_retry(1, True, engine._MAX_AUTO_RETRIES) is False
+
+
+def test_bake_noise_multiplier_behaves(engine):
+    """TODO-51 (partial): noise sim adds a wavelet-turbulence up-res bake pass
+    the flat per-res3 rate doesn't capture — calibrated from the 2026-06-22
+    AutoTest sweep (analyze_estim.py BAKE table actual/default ratios)."""
+    assert engine._bake_noise_multiplier(False, 2) == 1.0   # noise off: no change
+    assert engine._bake_noise_multiplier(True, 0) == 1.0    # upres 0: baseline
+    assert engine._bake_noise_multiplier(True, 1) == pytest.approx(2.3)
+    assert engine._bake_noise_multiplier(True, 2) == pytest.approx(3.8)
+    # upres 3+ unmeasured: falls back to the highest known bucket.
+    assert engine._bake_noise_multiplier(True, 3) == engine._BAKE_NOISE_UPRES_MULTIPLIER_DEFAULT
 
 
 class TestJobsNeedingRetry:
@@ -232,3 +246,66 @@ def test_estim_log_uses_deferred_addon_version(engine, pkg, tmp_path):
         engine._estim["output_path"] = ""
     rec = json.loads((tmp_path / "estim_log.jsonl").read_text(encoding="utf-8").strip())
     assert rec["addon_version"] == pkg.ADDON_VERSION
+
+
+def test_retry_path_redirects_console_when_debug_on():
+    """TODO-63 Part A: the retry bat (engine.py, runs Blender directly — no launcher)
+    must redirect to <retry_stem>.console.log when collect_debug_log is on, else 2>nul."""
+    src_path = os.path.join(os.path.dirname(__file__), "..", "scripts",
+                            "BatchSimLab", "engine.py")
+    with open(src_path, encoding="utf-8") as fh:
+        src = fh.read()
+    assert "if s.collect_debug_log:" in src
+    assert '.console.log"' in src and '2>&1' in src
+    assert '" 2>nul"' in src          # the off-branch tail is retained
+    assert "{blender_cmd}{_retry_tail}" in src
+
+
+class TestEtaTickThrottle:
+    """TODO-63 Part B: _log_eta_tick is throttled to >= _ETA_TICK_MIN_SECS, except
+    when forced (initial / batch_complete ticks), and records the live ETA figures."""
+
+    def _ticks(self, tmp_path):
+        import json
+        p = tmp_path / "estim_log.jsonl"
+        if not p.exists():
+            return []
+        return [json.loads(l) for l in p.read_text(encoding="utf-8").splitlines() if l.strip()]
+
+    def _call(self, engine, now, force=False):
+        return engine._log_eta_tick(
+            now=now, elapsed=now, jobs_done=2, total=5, phase="bake",
+            remaining_secs=4200.0, job_remaining_secs=600.0, force=force)
+
+    def test_first_tick_then_throttled_then_allowed(self, engine, tmp_path):
+        engine._estim["output_path"] = str(tmp_path)
+        engine._poll_state["eta_tick_ts"] = 0.0
+        try:
+            t0 = 100_000.0
+            # Forced initial tick (eta_tick_ts armed to 0 at batch_start).
+            assert self._call(engine, t0, force=True) is True
+            # Within the throttle window — suppressed.
+            assert self._call(engine, t0 + engine._ETA_TICK_MIN_SECS - 1) is False
+            # Past the window — allowed.
+            assert self._call(engine, t0 + engine._ETA_TICK_MIN_SECS + 1) is True
+        finally:
+            engine._estim["output_path"] = ""
+            engine._poll_state["eta_tick_ts"] = 0.0
+        ticks = [t for t in self._ticks(tmp_path) if t.get("event") == "batch_eta_tick"]
+        assert len(ticks) == 2                       # the throttled call wrote nothing
+        assert ticks[0]["remaining_secs"] == 4200.0
+        assert ticks[0]["jobs_total"] == 5
+        assert ticks[0]["job_remaining_secs"] == 600.0
+
+    def test_force_bypasses_throttle(self, engine, tmp_path):
+        engine._estim["output_path"] = str(tmp_path)
+        engine._poll_state["eta_tick_ts"] = 0.0
+        try:
+            assert self._call(engine, 200.0, force=True) is True
+            # Immediately again, well inside the window, but forced → still logs.
+            assert self._call(engine, 201.0, force=True) is True
+        finally:
+            engine._estim["output_path"] = ""
+            engine._poll_state["eta_tick_ts"] = 0.0
+        ticks = [t for t in self._ticks(tmp_path) if t.get("event") == "batch_eta_tick"]
+        assert len(ticks) == 2
