@@ -15,7 +15,7 @@ Applies fluid parameters, bakes, renders playblast MP4 + final still PNG,
 appends a row to Renders/results.csv, then quits Blender.
 """
 
-WORKER_VERSION = "0.9.3"
+WORKER_VERSION = "0.9.5"
 
 import bpy
 import sys
@@ -421,6 +421,16 @@ def _dlog(msg):
     except OSError:
         pass
 
+def _vdb_frame_token(n):
+    """Frame-number token Mantaflow uses in cache filenames, e.g. fluid_data_<token>.vdb.
+
+    Confirmed against a real negative-frame production cache (2026-06-23,
+    frame_start=-900): a negative frame is "-" + the 4-digit zero-padded
+    *absolute* value ("-0900"), not Python's plain f"{n:04d}" ("-900").
+    """
+    return f"-{abs(n):04d}" if n < 0 else f"{n:04d}"
+
+
 render_dir = os.path.join(output_path, "Renders")
 cache_dir  = os.path.join(output_path, "Cache", name)
 os.makedirs(render_dir, exist_ok=True)
@@ -437,9 +447,20 @@ _log(f"[{name}] Render mode: {render_mode}")
 # ---------------------------------------------------------------------------
 # TODO-34: render-phase fast-fail.  In the two-pass pipeline, if the bake phase
 # crashed or left an incomplete cache, the render phase has nothing useful to
-# render — bail BEFORE the heavy setup (GPU init, presave dance, etc.) and
-# wipe the partial cache so auto-retry takes the FULL-bake path instead of
-# wasting time on a RESUME-from-1 of broken data.
+# render — bail BEFORE the heavy setup (GPU init, presave dance, etc.).
+#
+# BUG-026 (v0.9.13): this used to shutil.rmtree() the ENTIRE cache_dir here so
+# the next retry was forced onto a full re-bake "instead of a RESUME-from-1 of
+# broken data". In production that destroyed hours of real progress on every
+# crash that happened late in a long bake (observed: a 4101-frame job crashed
+# at 3269/4101 — 80% done — and the wipe threw all of it away). The premise
+# doesn't hold up: the bake-phase RESUME path a few hundred lines below
+# already merges/continues from whatever frames exist, and Mantaflow's own
+# MODULAR resume is documented (a few lines into that path) to fall back to a
+# full re-bake on its own if it decides the cache isn't usable — worst case is
+# slower, never wrong. So now we just leave the cache alone and let the next
+# bake attempt's normal RESUME scan pick up from wherever baking actually
+# stopped.
 # ---------------------------------------------------------------------------
 if not do_bake:
     # v0.5.4: avoid os.walk / os.scandir on the cache directory.  v0.5.3
@@ -471,13 +492,13 @@ if not do_bake:
          f"bake_failed={_r34_bake_failed}")
 
     # Single-file presence check on the final frame — fast and lock-tolerant.
-    # Unverified for a negative frame_end: this assumes Mantaflow pads the
-    # sign into the field width the same way Python's :04d does (so frame
-    # -49 -> "fluid_data_-049.vdb").  If a real negative-frame bake names it
-    # differently, this check goes conservative — _r34_incomplete forces a
-    # full re-bake rather than silently trusting a stale/partial cache.
+    # Confirmed against a real negative-frame production cache (2026-06-23,
+    # frame_start=-900): Mantaflow names a negative frame "-" + the 4-digit
+    # zero-padded *absolute* value (frame -900 -> "fluid_data_-0900.vdb"),
+    # NOT Python's plain :04d (which gives "-900", one digit short) — see
+    # _vdb_frame_token.
     _r34_final_frame = os.path.join(
-        cache_dir, "data", f"fluid_data_{frame_end:04d}.vdb"
+        cache_dir, "data", f"fluid_data_{_vdb_frame_token(frame_end)}.vdb"
     )
     _log(f"[{name}] TODO-34: checking final frame file: {_r34_final_frame}")
     _r34_final_exists = os.path.isfile(_r34_final_frame)
@@ -499,14 +520,9 @@ if not do_bake:
         if _r34_incomplete:
             _reasons.append(f"cache has {_r34_existing}/{_r34_expected} frames")
         _log(f"[{name}] phase=render — skipping render: {'; '.join(_reasons)}.")
-        _log(f"[{name}] Wiping cache so auto-retry forces a full re-bake "
-             f"(instead of a RESUME-from-1 of broken data).")
-        try:
-            if os.path.isdir(cache_dir):
-                shutil.rmtree(cache_dir)
-        except OSError as _e:
-            _log(f"[{name}] WARNING: cache wipe failed ({_e}) — "
-                 f"retry may RESUME from partial cache.")
+        _log(f"[{name}] Leaving cache in place (BUG-026) — the next bake "
+             f"attempt's RESUME scan will continue from whatever frames "
+             f"already exist instead of starting over.")
         sys.exit(1)
 
 # ---------------------------------------------------------------------------

@@ -30,12 +30,15 @@ _PROGRESS_NAMES = [
     "_LOG_DONE_MARKERS",
     "_find_running_log",
     "_count_vdb_frames",
+    "_bake_progress_display",
     "_count_png_frames",
     "_format_eta",
     "_estimate_batch_remaining",
     "_format_elapsed",
     "_has_error",
     "_compute_batch_summary",
+    "_pid_is_alive",
+    "_live_job_pid",
 ]
 
 
@@ -113,6 +116,43 @@ def test_estimate_batch_remaining_counts_down_through_phases(progress):
     assert bake_phase > render_phase > 0.0
 
 
+class TestBakeProgressDisplay:
+    """User-reported UX bug: resuming a bake showed session-relative numbers
+    ("Baking (1 of 400)" for a 500-frame job resuming at frame 100) instead of
+    the job's real overall position ("Baking (101 of 500)") — looked like the
+    job had restarted from scratch even though it hadn't."""
+
+    def test_fresh_job_no_baseline(self, progress):
+        displayed, to_bake, factor = progress._bake_progress_display(
+            baked_new=1, total_frames=500, bake_baseline=0)
+        assert (displayed, to_bake) == (1, 500)
+        assert factor == pytest.approx(1 / 500)
+
+    def test_resumed_job_shows_absolute_position(self, progress):
+        # 500-frame job, 100 already baked before this session started, 1 new
+        # frame baked so far this session.
+        displayed, to_bake, factor = progress._bake_progress_display(
+            baked_new=1, total_frames=500, bake_baseline=100)
+        assert displayed == 101                # NOT 1
+        assert to_bake == 400                   # frames remaining this session
+        assert factor == pytest.approx(1 / 400)  # bar still animates 0→1 per session
+
+    def test_resume_completes_at_total(self, progress):
+        displayed, _, factor = progress._bake_progress_display(
+            baked_new=400, total_frames=500, bake_baseline=100)
+        assert displayed == 500
+        assert factor == 1.0
+
+    def test_full_rebake_detected_drops_stale_baseline(self, progress):
+        # Mantaflow ignored the resume hint and rebaked from frame 1 — every
+        # frame gets a fresh mtime, so baked_new (450) alone already exceeds
+        # what should have been "remaining" (400) under the old baseline.
+        displayed, to_bake, factor = progress._bake_progress_display(
+            baked_new=450, total_frames=500, bake_baseline=100)
+        assert (displayed, to_bake) == (450, 500)
+        assert factor == pytest.approx(450 / 500)
+
+
 def test_find_running_log_on_tmpdir(progress, tmp_path):
     """End-to-end on a temp jobs dir: an active log with no .done marker is found;
     once its .done lands it is no longer the running job."""
@@ -122,3 +162,46 @@ def test_find_running_log_on_tmpdir(progress, tmp_path):
 
     (tmp_path / "job_0000.done").write_text("ok", encoding="utf-8")
     assert progress._find_running_log(str(tmp_path)) is None
+
+
+def _exited_pid():
+    """Spawn and wait on a trivial subprocess; return its now-dead PID."""
+    import subprocess as sp
+    proc = sp.Popen([sys.executable, "-c", "pass"])
+    proc.wait()
+    return proc.pid
+
+
+class TestLiveJobPid:
+    """BUG-025: detect a batch still running in a *different* Blender session
+    (e.g. the UI session restarted but the background launcher/Blender it
+    spawned earlier did not) so Export Batch / Run Batch can refuse to
+    clobber its job files instead of orphaning it."""
+
+    def test_pid_is_alive_for_current_process(self, progress):
+        assert progress._pid_is_alive(os.getpid()) is True
+
+    def test_pid_is_not_alive_for_exited_process(self, progress):
+        assert progress._pid_is_alive(_exited_pid()) is False
+
+    def test_live_job_pid_none_without_pidfiles(self, progress, tmp_path):
+        assert progress._live_job_pid(str(tmp_path)) is None
+
+    def test_live_job_pid_none_for_missing_dir(self, progress, tmp_path):
+        assert progress._live_job_pid(str(tmp_path / "does_not_exist")) is None
+
+    def test_live_job_pid_found_for_running_pid(self, progress, tmp_path):
+        (tmp_path / "job_0000.pid").write_text(str(os.getpid()), encoding="utf-8")
+        assert progress._live_job_pid(str(tmp_path)) == ("job_0000", os.getpid())
+
+    def test_live_job_pid_ignored_for_dead_pid(self, progress, tmp_path):
+        (tmp_path / "job_0000.pid").write_text(str(_exited_pid()), encoding="utf-8")
+        assert progress._live_job_pid(str(tmp_path)) is None
+
+    def test_live_job_pid_matches_retry_stem(self, progress, tmp_path):
+        (tmp_path / "job_0000_retry.pid").write_text(str(os.getpid()), encoding="utf-8")
+        assert progress._live_job_pid(str(tmp_path)) == ("job_0000_retry", os.getpid())
+
+    def test_live_job_pid_skips_malformed_file(self, progress, tmp_path):
+        (tmp_path / "job_0000.pid").write_text("not-a-pid", encoding="utf-8")
+        assert progress._live_job_pid(str(tmp_path)) is None

@@ -23,7 +23,7 @@ Contents:
     defaults), the sentinel-filename regexes ``_DONE_RE`` / ``_RETRY_DONE_RE`` /
     ``_CRASHED_RE``, and ``_LOG_DONE_MARKERS``.
   * Scanners: ``_find_running_log`` / ``_count_vdb_frames`` / ``_count_png_frames``
-    / ``_has_error`` / ``_compute_batch_summary``.
+    / ``_has_error`` / ``_compute_batch_summary`` / ``_live_job_pid`` / ``_pid_is_alive``.
   * Estimator + formatters: ``_estimate_batch_remaining`` / ``_format_eta`` /
     ``_format_elapsed``.
 
@@ -33,6 +33,7 @@ sites and the progress/ETA tests keep resolving against the package namespace.
 import json
 import os
 import re
+import subprocess
 
 # Default per-frame / per-stage timing estimates used before real data is
 # available.  (The resolution-scaled bake/render rate constants stay in
@@ -54,6 +55,55 @@ _CRASHED_RE      = re.compile(r"^job_\d{4}\.crashed$")
 # Tail markers that mean "this job's log shows it finished" (used by
 # _find_running_log to skip a completed-but-not-yet-.done log).
 _LOG_DONE_MARKERS = ("Done. Results", "Performance record written to perf_log")
+
+# BUG-025: smoke_launcher.py (v0.6.7+) writes <job_stem>.pid alongside each
+# job, containing its own PID, removed via atexit on exit. Used to detect a
+# still-running batch from a *different* Blender session/process than the
+# one asking (_batch_is_running's in-memory timer flag only knows about the
+# current session — useless right after this UI session itself restarted,
+# which is exactly when a previous session's background batch is most likely
+# to still be alive and unsupervised).
+_PID_RE = re.compile(r"^job_\d{4}(?:_retry)?\.pid$")
+
+
+def _pid_is_alive(pid):
+    """True if a process with this PID currently exists (Windows tasklist).
+
+    Mirrors smoke_launcher._find_werfault_for_pid's tasklist-CSV pattern: a
+    real match is a quoted CSV row; "no tasks" is a localized info line that
+    never starts with a quote, so checking for that is locale-independent.
+    """
+    try:
+        result = subprocess.run(
+            ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+            capture_output=True, text=True, timeout=10,
+        )
+    except Exception:
+        return False
+    return any(line.startswith('"') for line in result.stdout.splitlines())
+
+
+def _live_job_pid(jobs_dir):
+    """Return (job_stem, pid) for the first job still running elsewhere, or None.
+
+    Used to refuse Export Batch / Run Batch while a previous batch's launcher
+    (and the Blender it spawned) is still alive — see _PID_RE above.
+    """
+    try:
+        all_files = sorted(os.listdir(jobs_dir))
+    except OSError:
+        return None
+    for f in all_files:
+        if not _PID_RE.match(f):
+            continue
+        try:
+            with open(os.path.join(jobs_dir, f), encoding="utf-8") as fh:
+                pid = int(fh.read().strip())
+        except (OSError, ValueError):
+            continue
+        if _pid_is_alive(pid):
+            return f[:-4], pid   # strip ".pid"
+    return None
 
 
 def _find_running_log(jobs_dir):
@@ -217,6 +267,34 @@ def _count_vdb_frames(jobs_dir, log_stem, tail=None, start_time=None, subdir="da
     # Fall back: look in this job's own cache dir.
     frames_baked = _vdb_count_from_dir(os.path.join(output_path, "Cache", name, subdir))
     return len(frames_baked), frame_count
+
+
+def _bake_progress_display(baked_new, total_frames, bake_baseline):
+    """Return (displayed_count, to_bake, factor) for the bake sub-task bar.
+
+    ``baked_new`` is mtime-filtered — frames written during THIS session only
+    (see ``_count_vdb_frames``). ``bake_baseline`` is how many frames already
+    existed when this session's bake stage started (the RESUME point, 0 for a
+    fresh job). Without this, a resumed job's progress text showed session-
+    relative numbers (e.g. "Baking (1 of 400)" for a 500-frame job resuming at
+    frame 100) instead of the job's real overall position ("Baking (101 of
+    500)") — confusing because it looked like the job had restarted.
+
+    ``factor`` stays session-relative (0→1 over THIS session's remaining
+    frames) so the bar still animates smoothly across a resume instead of
+    jumping in already partly full.
+    """
+    bake_baseline = max(bake_baseline, 0)
+    to_bake = max(total_frames - bake_baseline, 1)
+    # Full-rebake detected (every frame got a fresh mtime, so baked_new exceeds
+    # what should remain) — baked_new is already an absolute count; the
+    # baseline from the old (abandoned) partial cache no longer applies.
+    if baked_new > to_bake:
+        to_bake       = total_frames
+        bake_baseline = 0
+    displayed = min(bake_baseline + baked_new, total_frames)
+    factor    = min(baked_new / to_bake, 1.0) if to_bake > 0 else 0.0
+    return displayed, to_bake, factor
 
 
 def _count_png_frames(jobs_dir, log_stem, start_time=None):

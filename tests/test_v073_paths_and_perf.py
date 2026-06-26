@@ -66,7 +66,13 @@ class TestWorkerVersionBump:
         # 0.9.3 = TODO-66 follow-up (negative Frame Start: cache-filename
         # regexes tolerate a sign, frame-count math no longer assumes
         # frame_start == 1).
-        assert ssl._EXPECTED_WORKER_VERSION == "0.9.3"
+        # 0.9.4 = BUG-025 (TODO-34 final-frame check now matches Mantaflow's
+        # real negative-frame padding; cache-wipe retries through transient
+        # file locks instead of leaving a half-wiped cache).
+        # 0.9.5 = BUG-026 (TODO-34 no longer wipes cache_dir at all — leaves
+        # the partial cache for the next bake attempt's RESUME scan instead
+        # of forcing a full re-bake that used to destroy real progress).
+        assert ssl._EXPECTED_WORKER_VERSION == "0.9.5"
 
 
 class TestPerfRecordEstimationFields:

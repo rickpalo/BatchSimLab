@@ -40,13 +40,15 @@ from .progress import (
     _RETRY_DONE_RE,
     _find_running_log,
     _count_vdb_frames,
+    _bake_progress_display,
     _count_png_frames,
     _format_eta,
     _estimate_batch_remaining,
     _has_error,
     _compute_batch_summary,
+    _live_job_pid,
 )
-from .operators import _scene_has_camera
+from .operators import _scene_has_camera, _job_run_cmd
 
 
 # Bake estimate: bake_secs ≈ _BAKE_RATE_PER_RES3_FRAME × resolution³ × frames
@@ -842,16 +844,11 @@ def _poll_batch_progress_impl():
                                               start_time=_bake_st)
                 if bake_info:
                     baked_new, total_frames = bake_info   # baked_new = mtime-filtered
-                    bake_baseline = max(s.batch_bake_frame_baseline, 0)
-                    to_bake       = max(total_frames - bake_baseline, 1)
-                    # If Mantaflow is doing a full rebake, mtime count will exceed
-                    # the expected remaining frames — expand denominator to total.
-                    if baked_new > to_bake:
-                        to_bake = total_frames
+                    displayed_baked, to_bake, subtask_factor = _bake_progress_display(
+                        baked_new, total_frames, s.batch_bake_frame_baseline)
                     frames_baked  = baked_new
                     if to_bake > 0:
-                        subtask_text   = f"Baking ({baked_new} of {to_bake})"
-                        subtask_factor = min(baked_new / to_bake, 1.0)
+                        subtask_text   = f"Baking ({displayed_baked} of {total_frames})"
 
             elif stage_label == "Baking noise":
                 # TODO-52: data bake is done; count the noise/ subdir so the bar
@@ -1174,6 +1171,25 @@ class SMOKE_OT_run_batch(bpy.types.Operator):
             self.report({'ERROR'}, "No job files found — run Export Batch first")
             return {'CANCELLED'}
 
+        # BUG-025: _batch_is_running() only knows about THIS Blender session's
+        # in-memory poll timer — it can't see a previous session's batch that
+        # is still alive in the background (e.g. this UI crashed/restarted
+        # mid-batch, which is exactly when Monitor Existing Jobs gets used).
+        # Without this, Run Batch deletes the old job's .log/.done files and
+        # launches a second, disconnected process tree on top of it — observed
+        # 2026-06-23: two Mantaflow bakes fighting over the same machine for
+        # ~10+ hours, one of them completely orphaned from the addon's UI.
+        _live = _live_job_pid(jobs_dir)
+        if _live is not None:
+            _live_stem, _live_pid = _live
+            self.report(
+                {'ERROR'},
+                f"A previous batch is still running ({_live_stem}, PID {_live_pid}) — "
+                "wait for it to finish, or close and reopen Blender and use "
+                "Monitor Existing Jobs to reconnect to it, before starting a new one."
+            )
+            return {'CANCELLED'}
+
         # Verify exported helper files match the addon version.  A mismatch means
         # Export Batch was run with an older addon and the worker/launcher may lack
         # bug fixes or features present in the current installation.
@@ -1342,7 +1358,15 @@ class SMOKE_OT_retry_failed(bpy.types.Operator):
 
         blender_exe = bpy.app.binary_path
         blend_file  = bpy.data.filepath
+        python_exe  = sys.executable
         dest_worker = os.path.join(output_path, "smoke_worker.py")
+        # BUG-026 (v0.9.13): route retries through smoke_launcher.py, same as
+        # the main batch — a retry launched with Blender directly got neither
+        # the stale-log watchdog nor the crash-dialog suppression, so a hung
+        # or crashed retry on an unattended machine never auto-recovered (the
+        # progress bar just froze until someone intervened).
+        dest_launcher    = os.path.join(output_path, "smoke_launcher.py")
+        _launcher_exists = os.path.isfile(dest_launcher)
 
         bat_lines = [
             "@echo off",
@@ -1371,31 +1395,20 @@ class SMOKE_OT_retry_failed(bpy.types.Operator):
 
             name        = job_data.get("name", base_stem)
             render_mode = job_data.get("render_mode", "CYCLES")
-            if render_mode == "EEVEE":
-                blender_cmd = (
-                    f'"{blender_exe}" "{blend_file}" '
-                    f'--window-geometry 0 0 100 100 --factory-startup '
-                    f'--python "{dest_worker}" -- "{retry_json}"'
-                )
-            else:
-                blender_cmd = (
-                    f'"{blender_exe}" "{blend_file}" '
-                    f'--background --factory-startup '
-                    f'--python "{dest_worker}" -- "{retry_json}"'
-                )
 
-            # TODO-63 Part A: capture the retry run's full console (it runs Blender
-            # directly, no launcher — so its stdout+stderr would otherwise vanish/
-            # be discarded by `2>nul`).  Per-job `<retry_stem>.console.log`.
-            if s.collect_debug_log:
-                _retry_console = os.path.splitext(retry_json)[0] + ".console.log"
-                _retry_tail = f' > "{_retry_console}" 2>&1'
-            else:
-                _retry_tail = " 2>nul"
+            # _job_run_cmd prefers smoke_launcher.py (crash/hang detection) and
+            # falls back to invoking Blender directly only when the launcher
+            # wasn't exported; it also builds the same console-capture
+            # redirect (`<retry_stem>.console.log`) the main batch uses.
+            blender_cmd = _job_run_cmd(python_exe, dest_launcher, dest_worker,
+                                       blender_exe, blend_file, retry_json,
+                                       render_mode, _launcher_exists,
+                                       phase="both",
+                                       collect_debug_log=s.collect_debug_log)
 
             bat_lines += [
                 f"echo === Retrying: {name} ===",
-                f'{blender_cmd}{_retry_tail}',
+                blender_cmd,
                 "if errorlevel 1 (",
                 "    echo   WARNING: retry exited with error",
                 "    set /a ERRORS+=1",

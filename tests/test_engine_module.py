@@ -248,17 +248,26 @@ def test_estim_log_uses_deferred_addon_version(engine, pkg, tmp_path):
     assert rec["addon_version"] == pkg.ADDON_VERSION
 
 
-def test_retry_path_redirects_console_when_debug_on():
-    """TODO-63 Part A: the retry bat (engine.py, runs Blender directly — no launcher)
-    must redirect to <retry_stem>.console.log when collect_debug_log is on, else 2>nul."""
+def test_retry_path_routes_through_job_run_cmd():
+    """BUG-026 (v0.9.13): the retry bat must build its Blender invocation via
+    _job_run_cmd (same helper the main batch uses) instead of constructing a
+    direct-Blender command line by hand — that old direct form got neither the
+    stale-log watchdog nor the crash-dialog suppression, so a hung/crashed
+    retry on an unattended machine never auto-recovered (frozen progress bar).
+    _job_run_cmd itself already builds the right console-capture redirect
+    (<retry_stem>.console.log when collect_debug_log is on) — see
+    test_operators_module.py for that helper's own tests."""
     src_path = os.path.join(os.path.dirname(__file__), "..", "scripts",
                             "BatchSimLab", "engine.py")
     with open(src_path, encoding="utf-8") as fh:
         src = fh.read()
-    assert "if s.collect_debug_log:" in src
-    assert '.console.log"' in src and '2>&1' in src
-    assert '" 2>nul"' in src          # the off-branch tail is retained
-    assert "{blender_cmd}{_retry_tail}" in src
+    assert "dest_launcher    = os.path.join(output_path, \"smoke_launcher.py\")" in src
+    assert "_launcher_exists = os.path.isfile(dest_launcher)" in src
+    idx = src.find("class SMOKE_OT_retry_failed")
+    assert idx > 0, "SMOKE_OT_retry_failed not found"
+    window = src[idx:idx + 4000]
+    assert "blender_cmd = _job_run_cmd(" in window
+    assert "collect_debug_log=s.collect_debug_log" in window
 
 
 class TestEtaTickThrottle:

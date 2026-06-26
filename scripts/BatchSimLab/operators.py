@@ -42,6 +42,7 @@ from .jobgen import (
 )
 from .emitters import _populate_emitters, _blend_domain_resolution
 from .settings_io import _settings_dict, _load_settings_from_path
+from .progress import _live_job_pid
 
 
 # Hard bounds for each iterable parameter.  Used as a reliable fallback when
@@ -576,6 +577,25 @@ class SMOKE_OT_export_batch(bpy.types.Operator):
 
         if not bpy.data.filepath:
             self.report({'ERROR'}, "Please save the .blend file first")
+            return {'CANCELLED'}
+
+        # BUG-025: refuse to export over a batch that's still running in a
+        # *different* Blender session (the in-memory _batch_is_running flag
+        # only knows about this session). Export Batch in REPLACE mode
+        # deletes/rewrites job_NNNN.json — doing that while a previous
+        # session's launcher/Blender is still actively baking into the old
+        # job's cache orphans it with no way to reconnect (observed
+        # 2026-06-23). APPEND mode only adds new indices, but a live job
+        # could still be mid-retry, so the check applies to both.
+        _live = _live_job_pid(os.path.join(bpy.path.abspath(s.output_path), "jobs"))
+        if _live is not None:
+            _live_stem, _live_pid = _live
+            self.report(
+                {'ERROR'},
+                f"A previous batch is still running ({_live_stem}, PID {_live_pid}) — "
+                "wait for it to finish, or close and reopen Blender and use "
+                "Monitor Existing Jobs to reconnect to it, before exporting again."
+            )
             return {'CANCELLED'}
 
         # Validate all list values against known parameter bounds before export.

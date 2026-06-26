@@ -71,7 +71,7 @@ Requires Blender 4.x (tested on 4.5.5 and 5.1.1) on Windows 10/11.  May work on 
 bl_info = {
     "name":        "BatchSimLab",
     "author":      "Rick Palo",
-    "version":     (0, 9, 11),
+    "version":     (0, 9, 13),
     "blender":     (4, 0, 0),
     "location":    "View3D > Sidebar > BatchLab",
     "description": "Batch smoke simulation parameter sweeper with CSV logging "
@@ -169,12 +169,15 @@ from .progress import (
     _LOG_DONE_MARKERS,
     _find_running_log,
     _count_vdb_frames,
+    _bake_progress_display,
     _count_png_frames,
     _format_eta,
     _estimate_batch_remaining,
     _format_elapsed,
     _has_error,
     _compute_batch_summary,
+    _pid_is_alive,
+    _live_job_pid,
 )
 
 # TODO-58 module #5: the bpy.props PropertyGroups + their class-body callback
@@ -308,8 +311,8 @@ DOCS_URL = "https://github.com/rickpalo/BatchSimLab/blob/main/DOCUMENTATION.md"
 # Expected version strings in the helper files exported to the output folder.
 # When Run Batch detects a mismatch it warns the user to re-run Export Batch.
 # Keep these in sync with WORKER_VERSION / LAUNCHER_VERSION in those files.
-_EXPECTED_WORKER_VERSION   = "0.9.3"
-_EXPECTED_LAUNCHER_VERSION = "0.6.6"
+_EXPECTED_WORKER_VERSION   = "0.9.5"
+_EXPECTED_LAUNCHER_VERSION = "0.6.7"
 
 
 def _read_helper_version(path: str, var_name: str) -> str:

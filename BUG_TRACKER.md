@@ -1454,5 +1454,171 @@ in `test_todo52_noise_stage.py` for `_count_vdb_frames`, a signed-filename match
 
 ---
 
+## BUG-025: Watchdog kills never actually killed Blender (console-encoding crash in `_save_crash_log`) — **FIXED (v0.9.12)**
+
+**Status:** `FIXED` (v0.9.12) — found reviewing a real ~35h AutoTest job (4101 frames, res 256, noise_upres 2)
+**Files:** `smoke_launcher.py`, `smoke_worker.py`, `progress.py`, `engine.py`, `operators.py`
+**Related:** [[project_todos]], BUG-024 (resolves its "unverified by design" TODO-34 note), BUG-002 (watchdog family), BUG-021/022 (poll-state-vs-disk-reality cousins)
+
+### Symptom
+User ran a single very large job (frame -900..3200, res 256, noise_upres 2 — an expected
+~27h bake). Progress bars appeared to freeze after "a crash and auto restart"; clicking
+Monitor Existing Jobs un-froze them. The job eventually completed correctly (4101/4101
+data+noise frames, valid render), but took ~35h wall-clock for what should have been ~27h
+of actual compute.
+
+### Root cause
+Three independent defects, all surfaced by the same incident:
+
+1. **`_save_crash_log`'s trailing `print(f"...appended → {dest}")` crashes on Windows'
+   default cp1252 console** (`→` = U+2192, not representable in cp1252) — and every single
+   watchdog branch (wall-clock, stale-log, startup-timeout, WerFault) calls
+   `_save_crash_log()` *before* `_kill_pid()`. An unhandled `UnicodeEncodeError` here aborts
+   the launcher process mid-branch, so `_kill_pid()` never runs and the monitored Blender
+   process is never actually terminated. Proven directly from the job's own
+   `job_0000.bake.console.log`: the Traceback appears right after the wall-clock watchdog's
+   "killing" line, and **10.5 hours later** the same orphaned process logs
+   `Fluid: Bake Data complete (29912.11s)` — it kept baking, completely unsupervised, while
+   a separate legitimate retry baked the *same* job concurrently. This explains both the
+   retry's anomalously slow rate (23.4 s/frame vs. ~4.2 s/frame before the interference —
+   two simultaneous full Mantaflow bakes fighting over one machine) and the user-reported
+   frozen progress bar (a UI thread starved by that resource contention, not an actually-dead
+   poll timer — `_poll_batch_progress` is already wrapped in try/except and does not die
+   silently).
+2. **The render-phase cache wipe (TODO-34) can partially fail, leaving an inconsistent
+   cache.** When the render phase finds the bake incomplete, `smoke_worker.py` calls
+   `shutil.rmtree(cache_dir)` once to force a clean re-bake (deliberately not trusting a
+   RESUME from what might be broken boundary data). Here it raised `WinError 145` (directory
+   not empty) — almost certainly the orphaned process from (1) still holding a handle open in
+   `cache_dir/config` — leaving 12 stray frames out of 4101. The next retry's RESUME logic
+   then trusted those 12 frames as a valid base instead of the clean full re-bake the wipe
+   intended, and (since Mantaflow bakes are sequential) ended up re-baking 4089 of 4101 frames
+   anyway — full cost, none of the safety.
+3. **Run Batch / Export Batch have no guard against a previous batch still running
+   elsewhere.** `_batch_is_running()` reflects only the *current* Blender session's in-memory
+   poll-timer registration — it returns `False` right after this UI session itself
+   crashed/restarted, which is exactly when a previous session's background launcher/Blender
+   is most likely still alive and now fully disconnected from the UI (the same gap Monitor
+   Existing Jobs exists to bridge). Re-running Export/Run Batch in that state deletes/rewrites
+   the old job's `.log`/`.done`/`.json` files out from under a still-running process.
+
+A latent fourth issue surfaced while fixing (2): the TODO-34 final-frame check built the
+expected filename with a raw `f"{frame_end:04d}"`, flagged in BUG-024 as "unverified for a
+negative frame_end". Now confirmed from this job's real production cache: Mantaflow pads a
+negative frame as `"-"` + the 4-digit zero-padded *absolute* value (`fluid_data_-0900.vdb`),
+not Python's plain `:04d` (`"-900"`, one digit short). Harmless here (`frame_end`=3200 was
+positive), but would have made the check always report "incomplete" for any job with a
+negative `frame_end`.
+
+### Fix (v0.9.12)
+- `smoke_launcher.py`: fixed the arrow to ASCII (`->`); added
+  `sys.stdout`/`sys.stderr.reconfigure(errors="replace")` at the very top of `main()` so a
+  future non-ASCII slip anywhere in the watchdog path degrades to `?` instead of aborting the
+  kill sequence again.
+- `smoke_worker.py`: the TODO-34 wipe now retries with backoff (5×, 1s sleep) — the same
+  pattern already used by the Cache presave rename a few hundred lines above it, for the same
+  class of transient Windows file-lock. Extracted `_vdb_frame_token(n)` (confirmed convention:
+  `"-" + f"{abs(n):04d}"` for negative, `f"{n:04d}"` otherwise) and used it for the final-frame
+  filename instead of a raw `:04d`.
+- `progress.py`: new `_pid_is_alive(pid)` (Windows `tasklist /FI "PID eq N"`) and
+  `_live_job_pid(jobs_dir)` (scans `job_*.pid` files, returns the first job whose PID is still
+  alive). `smoke_launcher.py` now writes `<job_stem>.pid` (its own PID) right after spawning
+  Blender, removed via `atexit` on any exit path. `SMOKE_OT_run_batch.execute()`
+  (`engine.py`) and `SMOKE_OT_export_batch.execute()` (`operators.py`) both check
+  `_live_job_pid()` first and refuse to proceed — reporting the live job name and PID — instead
+  of clobbering its files.
+
+### Tests
+New: `TestConsoleEncodingSafety` + `TestPidfileTracking` (`test_smoke_launcher.py`),
+`test_print_survives_strict_cp1252_stdout` (`TestSaveCrashLog`, simulates a real strict-cp1252
+stdout), `TestCacheWipeRetry` + `TestVdbFrameToken` (`test_modular_resume.py`), `TestLiveJobPid`
+(`test_progress_module.py`, 8 cases covering alive/dead/missing/malformed/retry-stem). Updated
+the BUG-024-era `test_checks_cache_frame_completeness` (`test_run_batch_gating.py`) and the two
+`WORKER_VERSION`/`_EXPECTED_WORKER_VERSION` pins for the bump. Gate: 1188 pytest + AST
+unbound-name guard. Worker 0.9.3→0.9.4, launcher 0.6.6→0.6.7, addon 0.9.11→0.9.12 —
+**re-export required**.
+
+---
+
+## BUG-026: Render-phase cache wipe destroyed real progress; Retry Failed Jobs bypassed the launcher's safety net — **FIXED (v0.9.13)**
+
+**Status:** `FIXED` (v0.9.13) — found from a real networked-machine job (4101 frames, res 256, noise_upres 1) that crashed twice
+**Files:** `smoke_worker.py`, `engine.py`, `progress.py`
+**Related:** [[project_todos]], TODO-34 (the original DONE feature this revises), BUG-025 (same incident class — watchdog/launcher robustness), BUG-002 (watchdog family)
+
+### Symptom
+User reported BatchSimLab "frequently crashes, usually during the noise bake" on a
+networked machine; on the run analysed here it crashed twice and the second
+restart baked from scratch despite a healthy partial cache. Progress bars were
+also reported to sometimes freeze or lose track.
+
+### Root cause
+Two independent defects, both surfaced reviewing the same job's logs (which also
+reproduced BUG-025's already-fixed `_save_crash_log` Unicode crash — that job was
+still running the pre-fix launcher 0.6.6 / worker 0.9.3, since the v0.9.12 fix had
+not yet been exported to the networked machine):
+
+1. **TODO-34's render-phase fast-fail wiped the ENTIRE bake cache on any
+   incomplete bake**, not just the possibly-corrupt last frame. The job's bake
+   reached 3269/4101 frames (80% done, ~62 min) before Blender crashed; the very
+   next thing the two-pass `.bat` does regardless of the bake's exit code is start
+   the render phase, whose TODO-34 check found the bake incomplete and
+   `shutil.rmtree()`'d the whole `cache_dir`. The next retry found nothing to
+   resume and baked all 4101 frames from scratch — exactly the reported symptom.
+   The original premise ("wasting time on a RESUME-from-1 of broken data") doesn't
+   hold up: the bake-phase RESUME scan a few hundred lines below already merges
+   and continues from whatever frames exist, and is itself documented to fall
+   back to a full re-bake on its own if Mantaflow decides the cache isn't usable
+   — worst case is slower, never wrong.
+2. **Retry Failed Jobs (manual button and `_auto_retry_deferred`) invoked Blender
+   directly**, bypassing `smoke_launcher.py` entirely (a deliberate TODO-63 Part A
+   choice at the time, only console-capture was considered). That means a retry
+   got neither the stale-log watchdog, the wall-clock ceiling, nor the
+   crash-dialog suppression — if a retry hung or crashed into a dialog on an
+   unattended networked machine, nothing would recover it; the progress bar would
+   simply stay at its last heartbeat forever (matches BUG-025's own note that
+   clicking Monitor Existing Jobs "un-froze" an apparently-dead bar).
+
+A third, lower-severity issue surfaced in the same review: the bake progress
+bar's "Baking (N of M)" text used session-relative numbers (`baked_new` of
+`to_bake`, i.e. frames baked/needed THIS session) instead of the job's real
+overall position. Resuming a 500-frame job at frame 100 showed "Baking (1 of
+400)", which reads as the job having restarted from scratch even though it
+hadn't.
+
+### Fix (v0.9.13)
+- `smoke_worker.py`: removed the `shutil.rmtree(cache_dir)` retry-with-backoff
+  block from the TODO-34 fast-fail check entirely. It still skips the render and
+  exits non-zero (so the job is correctly flagged for retry) but no longer
+  touches the cache directory.
+- `engine.py`: `SMOKE_OT_retry_failed.execute()` now builds each retry's command
+  line via `operators._job_run_cmd` (the same helper the main batch uses) instead
+  of hand-rolling a direct `blender.exe` invocation — routes through
+  `smoke_launcher.py` whenever it was exported, falling back to direct
+  invocation only if it's missing. `_auto_retry_deferred` calls the same
+  operator, so automatic retries get the same fix for free.
+- `progress.py`: new pure helper `_bake_progress_display(baked_new,
+  total_frames, bake_baseline)` returns the ABSOLUTE displayed count
+  (`bake_baseline + baked_new`, capped at `total_frames`) alongside the existing
+  session-relative `to_bake`/`factor` (so the bar still animates 0→1 smoothly
+  across a resume instead of jumping in already partly full). `engine.py`'s
+  poller now calls it instead of inlining the same arithmetic.
+
+### Tests
+New: `TestCacheWipeRemoved` (`test_modular_resume.py`, replaces
+`TestCacheWipeRetry`), `test_does_not_wipe_cache_and_still_exits_nonzero`
+(`test_run_batch_gating.py`, replaces `test_wipes_cache_to_force_full_rebake`),
+`test_retry_path_routes_through_job_run_cmd` (`test_engine_module.py`, replaces
+`test_retry_path_redirects_console_when_debug_on`), `TestBakeProgressDisplay`
+(`test_progress_module.py`, 4 cases). Gate: 1194 pytest + AST unbound-name guard +
+real-Blender headless register/draw exercise + a targeted real-RNA check of
+`retry_failed`'s generated `.bat` (confirms it references `smoke_launcher.py`, not
+a direct `--window-geometry`/`--background` invocation) and
+`_bake_progress_display` against a live `batch_bake_frame_baseline`. Worker
+0.9.4→0.9.5, addon 0.9.12→0.9.13 (launcher unchanged at 0.6.7 — this fix only
+changes how engine.py *invokes* it, not its own code). **Re-export required.**
+
+---
+
 *Document created 2026-05-11.  Append new attempts to existing issues rather than
 creating duplicate entries.*

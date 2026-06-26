@@ -181,6 +181,61 @@ class TestPresaveRenameRetry:
         )
 
 
+class TestCacheWipeRemoved:
+    """BUG-026 (v0.9.13): the TODO-34 render-phase fast-fail must NOT wipe
+    cache_dir any more. The wipe-then-force-full-rebake design (BUG-025) used
+    to destroy real progress on every crash that happened late in a long bake
+    (observed: a 4101-frame job crashed at 3269/4101 — 80% done — and lost all
+    of it). The bake-phase RESUME scan already handles a partial cache
+    correctly, so the fast-fail check now just skips the render and leaves the
+    cache for the next attempt to resume from."""
+
+    def test_todo34_block_does_not_wipe_cache_dir(self):
+        src = _worker_src()
+        m = re.search(r"if not do_bake:[\s\S]+?sys\.exit\(1\)", src)
+        assert m, "TODO-34 block not found"
+        assert "shutil.rmtree(cache_dir)" not in m.group(0), (
+            "TODO-34 must not wipe cache_dir — BUG-026 (it used to destroy "
+            "real progress on a late-bake crash; the bake-phase RESUME scan "
+            "already handles a partial cache correctly)"
+        )
+
+
+class TestVdbFrameToken:
+    """BUG-025: Mantaflow's real on-disk frame-number padding for a negative
+    frame, confirmed from a real production cache (2026-06-23,
+    frame_start=-900): "-" + the 4-digit zero-padded absolute value
+    ("-0900"), NOT Python's plain f"{n:04d}" ("-900", one digit short —
+    would make the TODO-34 final-frame check always report "incomplete" for
+    any job with a negative frame_end)."""
+
+    @pytest.fixture(scope="class")
+    def token(self):
+        src = _worker_src()
+        start = src.index("def _vdb_frame_token(")
+        end = src.index("\nrender_dir = os.path.join", start)
+        ns: dict = {}
+        exec(src[start:end], ns)
+        return ns["_vdb_frame_token"]
+
+    def test_negative_900(self, token):
+        assert token(-900) == "-0900"
+
+    def test_negative_one(self, token):
+        assert token(-1) == "-0001"
+
+    def test_zero(self, token):
+        assert token(0) == "0000"
+
+    def test_positive(self, token):
+        assert token(3200) == "3200"
+
+    def test_used_by_todo34_check(self):
+        """The fast-fail check must use the token helper, not a raw :04d."""
+        src = _worker_src()
+        assert 'f"fluid_data_{_vdb_frame_token(frame_end)}.vdb"' in src
+
+
 class TestCountDataFilesFastScan:
     """v0.5.3: _count_data_files must use os.scandir on data/+noise/ only,
     NOT os.walk on the full tree.  v0.5.2Test render-phase hung indefinitely

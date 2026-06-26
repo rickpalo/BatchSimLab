@@ -321,8 +321,11 @@ class TestJobLogPhaseAwareStatus:
 
 
 class TestRenderPhaseFastFail:
-    """TODO-34: render-phase early-exit when bake didn't leave a usable cache,
-    plus wipe the partial cache so auto-retry takes the FULL-bake path."""
+    """TODO-34: render-phase early-exit when bake didn't leave a usable cache.
+
+    BUG-026 (v0.9.13): no longer wipes the partial cache (see
+    test_modular_resume.py::TestCacheWipeRemoved) — it just skips the render
+    and leaves the cache for the next bake attempt's RESUME scan."""
     def _src(self):
         path = os.path.join(os.path.dirname(__file__), "..",
                             "scripts", "BatchSimLab", "smoke_worker.py")
@@ -349,11 +352,14 @@ class TestRenderPhaseFastFail:
         os.path.isfile on the final frame.  See worker docstring for the
         Synology/Norton filter-chain rationale.  The functional check is
         still 'does the cache reach frame_end' — just via one file instead
-        of a directory scan."""
+        of a directory scan.
+
+        v0.9.4 (BUG-025): the filename now goes through _vdb_frame_token,
+        not a raw :04d — see test_modular_resume.py::TestVdbFrameToken for
+        why a plain :04d is wrong for a negative frame_end."""
         src = self._src()
         # Must check the FINAL frame's expected .vdb file exists.
-        assert 'fluid_data_{frame_end:04d}.vdb' in src or \
-               'fluid_data_{frame_end:04d}.vdb"' in src, (
+        assert 'f"fluid_data_{_vdb_frame_token(frame_end)}.vdb"' in src, (
             "TODO-34 must check the final frame's .vdb file"
         )
         assert "_r34_final_exists = os.path.isfile(_r34_final_frame)" in src
@@ -369,12 +375,14 @@ class TestRenderPhaseFastFail:
             "filter chain blocks the directory scan at 0% CPU (v0.5.3Test)"
         )
 
-    def test_wipes_cache_to_force_full_rebake(self):
+    def test_does_not_wipe_cache_and_still_exits_nonzero(self):
         import re
         src = self._src()
-        # shutil.rmtree on the cache dir forces auto-retry's FULL bake path
-        # (use_existing_cache + empty dir → FULL).  Followed by sys.exit(1) so
-        # the .bat / addon count the job as failed and auto-retry triggers.
-        # DOTALL: rmtree and sys.exit are on separate lines.
-        assert re.search(r"shutil\.rmtree\(cache_dir\).*sys\.exit\(1\)",
-                         src, re.DOTALL)
+        m = re.search(r"if not do_bake:[\s\S]+?sys\.exit\(1\)", src)
+        assert m, "TODO-34 block not found"
+        assert "shutil.rmtree(cache_dir)" not in m.group(0), (
+            "BUG-026: TODO-34 must not wipe cache_dir any more"
+        )
+        # Still exits non-zero so the .bat / addon count the job as failed and
+        # auto-retry triggers — only the destructive wipe was removed.
+        assert "sys.exit(1)" in m.group(0)

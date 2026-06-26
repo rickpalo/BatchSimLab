@@ -67,6 +67,29 @@ class TestSaveCrashLog:
         # Nothing written inside the jobs dir
         assert list(jobs_dir.glob("*.txt")) == []
 
+    def test_print_survives_strict_cp1252_stdout(self, tmp_path, monkeypatch):
+        """BUG-025: _save_crash_log's trailing print() used a U+2192 arrow,
+        which raises UnicodeEncodeError on Windows' default cp1252 console.
+        Because _save_crash_log runs BEFORE _kill_pid() in every watchdog
+        branch, that crash meant Blender was never actually killed (observed
+        2026-06-23: a wall-clock-killed bake kept baking, unsupervised, for
+        10+ more hours). Regression: simulate a real strict-cp1252 stdout —
+        must not raise."""
+        import io
+
+        fake_temp = tmp_path / "TEMP"
+        fake_temp.mkdir()
+        (fake_temp / "blender.crash.txt").write_text("crash")
+        monkeypatch.setenv("TEMP", str(fake_temp))
+
+        jobs_dir = tmp_path / "jobs"
+        jobs_dir.mkdir()
+
+        strict_stdout = io.TextIOWrapper(io.BytesIO(), encoding="cp1252", errors="strict")
+        monkeypatch.setattr(sys, "stdout", strict_stdout)
+
+        _save_crash_log(str(jobs_dir), "job_0002")  # must not raise
+
     def test_header_contains_timestamp_and_job_stem(self, tmp_path, monkeypatch):
         """Each entry begins with a dated header containing the job stem."""
         fake_temp = tmp_path / "TEMP"
@@ -730,3 +753,60 @@ class TestConsoleLogFilter:
         _filter_console_to_debug_log(str(tmp_path / "absent.console.log"),
                                      str(debug_out), "job_0003")
         assert not debug_out.exists()
+
+
+class TestConsoleEncodingSafety:
+    """BUG-025: a non-ASCII character in any print() between a watchdog
+    detecting a timeout and the line that calls _kill_pid() is fatal on
+    Windows' default cp1252 console — and would silently skip the kill.
+    test_print_survives_strict_cp1252_stdout (TestSaveCrashLog) is the
+    behavioral regression for the proven trigger; this is the depth-defense:
+    main() must neutralize the failure mode for any *future* non-ASCII slip,
+    not just the one character that bit us."""
+
+    def _launcher_src(self):
+        with open(os.path.join(_SCRIPTS_DIR, "smoke_launcher.py"), encoding="utf-8") as fh:
+            return fh.read()
+
+    def test_no_arrow_in_save_crash_log(self):
+        """The proven trigger: U+2192 in _save_crash_log's trailing print()."""
+        src = self._launcher_src()
+        idx = src.index('"[smoke_launcher] Crash log appended')
+        line_end = src.index("\n", idx)
+        assert "→" not in src[idx:line_end]
+
+    def test_main_reconfigures_stdout_and_stderr_errors(self):
+        """main() must neutralize encoding errors on both streams before doing
+        anything else — every watchdog print happens after this point."""
+        src = self._launcher_src()
+        main_start = src.index("\ndef main():")
+        first_real_line = src.index("if len(sys.argv) < 3:")
+        preamble = src[main_start:first_real_line]
+        assert "reconfigure" in preamble
+        assert "sys.stdout" in preamble and "sys.stderr" in preamble
+        assert 'errors="replace"' in preamble or "errors='replace'" in preamble
+
+
+class TestPidfileTracking:
+    """BUG-025: the launcher marks a job "live" with its own PID so a
+    *different* Blender session can detect a still-running previous batch
+    before Export Batch / Run Batch clobbers its job files (see
+    progress._live_job_pid, exercised in test_progress_module.py)."""
+
+    def _launcher_src(self):
+        with open(os.path.join(_SCRIPTS_DIR, "smoke_launcher.py"), encoding="utf-8") as fh:
+            return fh.read()
+
+    def test_writes_pid_file_after_spawning_blender(self):
+        src = self._launcher_src()
+        spawn = src.index("blender_pid = proc.pid")
+        tail = src[spawn:spawn + 1200]
+        assert 'job_stem + ".pid"' in tail
+        assert "os.getpid()" in tail
+
+    def test_pid_file_cleaned_up_via_atexit(self):
+        src = self._launcher_src()
+        spawn = src.index("blender_pid = proc.pid")
+        tail = src[spawn:spawn + 1200]
+        assert "atexit.register" in tail
+        assert "os.remove(_pid_path)" in tail

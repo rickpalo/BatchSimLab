@@ -30,7 +30,7 @@ Behaviour
 No third-party dependencies — stdlib + tasklist.exe (built into Windows).
 """
 
-LAUNCHER_VERSION = "0.6.6"
+LAUNCHER_VERSION = "0.6.7"
 
 import atexit
 import ctypes
@@ -324,7 +324,7 @@ def _save_crash_log(jobs_dir, job_stem, launch_time=None, blender_exe=None):
                     fh.write("[could not read blender.crash.txt]\n")
             else:
                 fh.write(f"[no blender.crash.txt found in %TEMP% after {_CRASH_DUMP_GRACE_SECS}s grace]\n")
-        print(f"[smoke_launcher] Crash log appended → {dest}")
+        print(f"[smoke_launcher] Crash log appended -> {dest}")
     except OSError as exc:
         print(f"[smoke_launcher] Warning: could not write crash log: {exc}")
 
@@ -388,6 +388,22 @@ def _filter_console_to_debug_log(console_path, debug_out, job_stem):
 # ---------------------------------------------------------------------------
 
 def main():
+    # BUG-025: Windows consoles default to the system ANSI code page (cp1252
+    # here), which can't encode every character that ends up in a print().
+    # An unhandled UnicodeEncodeError part-way through a watchdog branch is
+    # fatal to the whole process — and every branch calls _save_crash_log()
+    # BEFORE _kill_pid(), so a crash here means Blender is never actually
+    # killed.  Observed 2026-06-23: a wall-clock-killed bake kept baking,
+    # unsupervised, for 10+ more hours after the "killing" log line, because
+    # _save_crash_log's own trailing print() raised first.  errors="replace"
+    # degrades a stray character to "?" instead of aborting the kill sequence.
+    for _stream in (sys.stdout, sys.stderr):
+        if _stream is not None and hasattr(_stream, "reconfigure"):
+            try:
+                _stream.reconfigure(errors="replace")
+            except (OSError, ValueError):
+                pass
+
     if len(sys.argv) < 3:
         print("Usage: python smoke_launcher.py <blender_exe> <job_json>")
         sys.exit(1)
@@ -529,6 +545,28 @@ def main():
     proc        = subprocess.Popen(cmd, stderr=_stderr_fh if _stderr_fh is not None else subprocess.DEVNULL)
     blender_pid = proc.pid
     print(f"[smoke_launcher] Blender PID {blender_pid}")
+
+    # BUG-025: mark this job as "live" with the launcher's own PID (alive for
+    # the launcher's whole run, unlike blender_pid which changes across the
+    # bake/render phase split) so a *different* Blender session — e.g. after
+    # this UI session crashed/restarted, the exact gap Monitor Existing Jobs
+    # exists for — can tell a previous Run Batch / Export Batch is still
+    # active before clobbering its job files out from under it. Removed via
+    # atexit, the same best-effort pattern as the crash marker below.
+    _pid_path = os.path.join(jobs_dir, job_stem + ".pid")
+    try:
+        with open(_pid_path, "w", encoding="utf-8") as fh:
+            fh.write(str(os.getpid()))
+
+        def _cleanup_pidfile():
+            try:
+                os.remove(_pid_path)
+            except OSError:
+                pass
+
+        atexit.register(_cleanup_pidfile)
+    except OSError as exc:
+        _dlog(f"warning: could not write pidfile: {exc}")
 
     # Assign Blender to the Job Object now that we have its PID.
     if _job_handle:
